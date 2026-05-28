@@ -17,7 +17,7 @@ Free, open-source dashcam and sentry mode app built specifically for BYD vehicle
 ---
 
 <p align="center">
-  <a href="https://player.cloudinary.com/embed/?cloud_name=dhwuuoz67&public_id=Demo_nqf0ky">
+  <a href="https://res.cloudinary.com/dhwuuoz67/video/upload/v1779980329/video_2_pvigfb.mp4">
     <img src="https://github.com/user-attachments/assets/d5faeb2a-96dd-4737-86f4-2e87af52ec4c" alt="Click to Watch OverDrive Demo" width="100%">
   </a>
 </p>
@@ -43,14 +43,7 @@ Download the latest APK from [GitHub Releases](https://github.com/yash-srivastav
 
 ### 3. Network & Tunnel Setup
 
-**Option A: Dedicated Wi-Fi Hotspot (Recommended)**
-- Keep the Sing-box Proxy disabled.
-- Directly enable your preferred tunnel (Zrok, Cloudflared or Tailscale).
-
-**Option B: Public / BYD SIM**
-- Toggle the **"Public"** switch at the top right of the dashboard.
-- Go to Daemon View and verify the Sing-box Proxy Daemon is running.
-- Once verified, enable your preferred tunnel (Zrok, Cloudflared or Tailscale).
+Enable your preferred tunnel (Zrok, Cloudflared or Tailscale).
 
 ### Telegram Notifications Setup
 1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → follow prompts → get your bot token
