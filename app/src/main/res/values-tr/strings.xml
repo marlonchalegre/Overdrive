@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OverDrive</string>
     <!-- Accessibility Service -->
-    <string name="accessibility_service_description">Bu hizmet ekran içeriğini okumamaktadır veya etkileşime girmez.</string>
+    <string name="accessibility_service_description">Overdrive araç izlemesini arka planda etkin tutar. Bu hizmet ekran içeriğini okumaz veya onunla etkileşime girmez.</string>
     <!-- Recording Mode Labels -->
     <!-- Proximity Guard Settings Labels -->
     <!-- Quality Settings Labels -->
@@ -51,11 +51,11 @@
     <string name="cd_player_maximize">Oyuncunu en üst seviyeye çıkar</string>
     <string name="cd_player_minimize">Dışarı çıkış tam ekran</string>
     <string name="cd_player_mute">Ses değiştir</string>
-    <string name="cd_player_quadrant_all">Show all cameras</string>
-    <string name="cd_player_quadrant_front">Show front camera</string>
-    <string name="cd_player_quadrant_right">Show right camera</string>
-    <string name="cd_player_quadrant_rear">Show rear camera</string>
-    <string name="cd_player_quadrant_left">Show left camera</string>
+    <string name="cd_player_quadrant_all">Tüm kameraları göster</string>
+    <string name="cd_player_quadrant_front">Ön kamerayı göster</string>
+    <string name="cd_player_quadrant_right">Sağ kamerayı göster</string>
+    <string name="cd_player_quadrant_rear">Arka kamerayı göster</string>
+    <string name="cd_player_quadrant_left">Sol kamerayı göster</string>
     <string name="cd_delete">Sil</string>
     <string name="cd_share">Share</string>
     <string name="cd_expand">Genişle</string>
@@ -441,11 +441,11 @@
     <string name="toast_token_regenerated">Token Yenilenmiş</string>
     <string name="dashboard_no_tunnel">Hiç tünel yürümedi .</string>
     <string name="dashboard_starting_zrok">Zrok tünelini başlatıyorum...</string>
-    <string name="dashboard_starting_cloudflared">Bulutlu tünel başlıyor...</string>
+    <string name="dashboard_starting_cloudflared">Cloudflared tüneli başlatılıyor…</string>
     <string name="dashboard_starting_tailscale">Tailscale tünelini başlatıyorum...</string>
     <string name="dashboard_waiting_url">URL tünelini bekliyoruz...</string>
     <string name="dashboard_daemons_running">%1$d/%2$d Çalışma</string>
-    <string name="tunnel_label_cloudflared">Bulutlu</string>
+    <string name="tunnel_label_cloudflared">Cloudflared</string>
     <string name="tunnel_label_zrok">Zrok</string>
     <string name="tunnel_label_tailscale">Tailscale</string>
     <!-- Daemon names — shown on the Daemons list and dashboard. -->
@@ -599,7 +599,7 @@
     <string name="settings_about_support_share_title">Başka bir araç sahibine bahset</string>
     <string name="settings_about_support_share_value">Paylaşılan her bağlantı başka bir BYD sahibinin Overdrive\'i keşfetmesine yardımcı olur.</string>
     <string name="settings_about_support_share_message">BYD için Overdrive  açık kaynaklı gözetim &amp; dashcam\'ı kontrol edin: https://overdrive-5lc.pages.dev/</string>
-    <string name="settings_about_support_share_chooser">Paylaşım Aşırı Sürüş</string>
+    <string name="settings_about_support_share_chooser">Overdrive\'ı Paylaş</string>
     <string name="settings_about_open_link_failed">Bağlantıyı açamadım.</string>
     <string name="settings_about_open_link_copied">URL kopyalandı: %1$s</string>
     <string name="settings_about_support_kofi_title">Sonraki versiyon için yakıt</string>
@@ -757,7 +757,7 @@
     <!-- Section row subtitles (portrait) -->
     <string name="settings_section_recording_subtitle">Ön / sonrası tamponlar, kodekler, depolama sınırları.</string>
     <string name="settings_section_surveillance_subtitle">Deteksiyon bölgeleri, program, hareket hassasiyeti.</string>
-    <string name="settings_section_daemons_subtitle">Bulutlu, Zrok, Telegram, MQTT koşucuları.</string>
+    <string name="settings_section_daemons_subtitle">Cloudflared, Zrok, Telegram, MQTT çalıştırıcıları.</string>
     <!-- About / data row subtitles -->
     <string name="settings_about_row_title">OverDrive hakkında</string>
     <string name="settings_about_row_subtitle">Versiyon, lisans, destek geliştirme.</string>
@@ -969,4 +969,82 @@
     <!-- content descriptions -->
     <string name="roadsense_cd_cal_level">Route calibration level</string>
     <string name="roadsense_cd_direction">Direction to next hazard</string>
+    <string name="blindspot_overlay_left">SOL</string>
+    <string name="camera_concurrent_probe_label">Sonraki açılışta çift kamera desteğini test et</string>
+    <string name="camera_concurrent_probe_subtitle">Bu aracın pano + araç kamerasını eşzamanlı çalıştırabildiğini doğrulamak için her iki kamerayı aynı anda açan tek seferlik bir kontrol. Park halindeyken bir sonraki yeniden başlatmada bir kez çalışır. Kayıtlar hatalı görünmedikçe KAPALI bırakın — gerekli değildir ve çalışırken etkin bir kayıt varsa onu kısa süreliğine kesintiye uğratabilir.</string>
+    <string name="blindspot_overlay_right">SAĞ</string>
+    <string name="url_copied_no_browser">Tarayıcı bulunamadı. Bağlantı kopyalandı: %1$s</string>
+    <string name="rail_hazard_map">Harita</string>
+    <string name="roadsense_map_title">Harita</string>
+    <string name="roadsense_map_route_clear">Temizle</string>
+    <string name="roadsense_map_route_unmapped">Henüz haritalanmadı</string>
+    <string name="roadsense_map_back">Geri</string>
+    <string name="roadsense_map_recenter">Konumuma ortala</string>
+    <string name="roadsense_map_severity_label">Şiddet</string>
+    <string name="roadsense_map_type_label">Tür</string>
+    <string name="roadsense_map_type_unknown">Bilinmiyor</string>
+    <string name="roadsense_map_confirm">Onayla</string>
+    <string name="roadsense_map_delete">Sil</string>
+    <string name="roadsense_map_status_candidate">Aday</string>
+    <string name="roadsense_map_status_local">Cihazda</string>
+    <string name="roadsense_map_status_cloud">Paylaşılan</string>
+    <string name="roadsense_map_meta_format">%1$s · %2$d%% güven · %3$s</string>
+    <string name="roadsense_map_confirmed_toast">Tehlike onaylandı</string>
+    <string name="roadsense_map_deleted_toast">Tehlike kaldırıldı</string>
+    <string name="roadsense_map_action_failed">RoadSense\'e ulaşılamadı. Tekrar deneyin.</string>
+    <string name="roadsense_map_no_location">GPS sinyali bekleniyor…</string>
+    <string name="roadsense_map_search_hint">Hedef ara</string>
+    <string name="roadsense_map_search_action">Ara</string>
+    <string name="roadsense_map_searching">Aranıyor…</string>
+    <string name="roadsense_map_no_results">Yer bulunamadı</string>
+    <string name="roadsense_map_pick_destination">Hedef seçin</string>
+    <string name="roadsense_map_routing">Rota bulunuyor…</string>
+    <string name="roadsense_map_route_failed">Rota bulunamadı. Tekrar deneyin.</string>
+    <string name="roadsense_map_need_key">Navigasyon için RoadSense ayarlarından bir rota anahtarı ekleyin.</string>
+    <string name="roadsense_map_rerouting">Rotadan sapıldı — yeniden hesaplanıyor…</string>
+    <string name="roadsense_map_arrived">Hedefe ulaştınız.</string>
+    <string name="roadsense_map_nav_started">%1$s konumuna gidiliyor</string>
+    <string name="roadsense_map_nav_ended">Navigasyon sona erdi</string>
+    <string name="roadsense_map_end_nav">Navigasyonu bitir</string>
+    <string name="roadsense_map_zoom_in">Yakınlaştır</string>
+    <string name="roadsense_map_zoom_out">Uzaklaştır</string>
+    <string name="roadsense_map_hazards_filter">Tehlike görünürlüğü</string>
+    <string name="roadsense_map_hazards_all">Tüm tehlikeleri göster</string>
+    <string name="roadsense_map_hazards_moderate">Orta ve şiddetli</string>
+    <string name="roadsense_map_hazards_severe">Sadece şiddetli</string>
+    <string name="roadsense_map_hazards_hidden">Tehlikeleri gizle</string>
+    <string name="roadsense_map_poi_toggle">Şarj ve yakıt</string>
+    <string name="roadsense_map_dimension_toggle">2B / 3B binalar</string>
+    <string name="roadsense_map_3d_on">3B binalar açık</string>
+    <string name="roadsense_map_3d_off">3B binalar kapalı</string>
+    <string name="roadsense_map_poi_loading">Şarj ve yakıt istasyonları aranıyor…</string>
+    <string name="roadsense_map_poi_none">Yakınlarda istasyon bulunamadı</string>
+    <string name="roadsense_map_poi_need_route">Önce bir hedef seçin</string>
+    <string name="roadsense_map_stop_added">Durak eklendi</string>
+    <string name="roadsense_map_remove_stop_action">Durağı kaldır</string>
+    <string name="roadsense_map_poi_navigate">Buraya git</string>
+    <string name="roadsense_map_poi_kind_charging">Şarj istasyonu</string>
+    <string name="roadsense_map_poi_kind_fuel">Yakıt istasyonu</string>
+    <string name="roadsense_map_poi_charging_generic">Şarj istasyonu</string>
+    <string name="roadsense_map_poi_fuel_generic">Yakıt istasyonu</string>
+    <string name="roadsense_map_route_switched">Rota değiştirildi</string>
+    <string name="roadsense_map_pill_severe">%1$d şiddetli</string>
+    <string name="roadsense_map_pill_moderate">%1$d orta</string>
+    <string name="roadsense_map_pill_minor">%1$d hafif</string>
+    <string name="roadsense_map_offline">Harita verileri çevrimdışı kullanılamıyor</string>
+    <string name="roadsense_map_clear_search">Aramayı temizle</string>
+    <string name="roadsense_map_routes_title">Bir rota seçin</string>
+    <string name="roadsense_map_routes_to">%1$s konumuna rotalar</string>
+    <string name="roadsense_map_routes_cancel">İptal</string>
+    <string name="roadsense_map_route_option">Rota %1$d</string>
+    <string name="roadsense_map_fastest">En hızlı</string>
+    <string name="roadsense_map_start">Başlat</string>
+    <string name="roadsense_map_your_location">Konumunuz</string>
+    <string name="roadsense_map_add_stop">Durak ekle</string>
+    <string name="roadsense_map_add_stop_hint">Eklenecek bir durak arayın</string>
+    <string name="roadsense_map_stop_removed">Durak kaldırıldı</string>
+    <string name="roadsense_map_remove_stop">Durağı kaldır</string>
+    <string name="roadsense_map_move_stop_up">Durağı yukarı taşı</string>
+    <string name="roadsense_map_move_stop_down">Durağı aşağı taşı</string>
+    <string name="roadsense_map_max_stops">En fazla %1$d durak eklenebilir</string>
 </resources>

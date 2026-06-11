@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OverDrive</string>
     <!-- Accessibility Service -->
-    <string name="accessibility_service_description">Übertragung von Fahrzeugüberwachung im Hintergrund aktiviert. Dieser Dienst liest und interagiert nicht mit Bildschirminhalten.</string>
+    <string name="accessibility_service_description">Hält die Fahrzeugüberwachung von Overdrive im Hintergrund aktiv. Dieser Dienst liest keine Bildschirminhalte und interagiert nicht mit ihnen.</string>
     <!-- Recording Mode Labels -->
     <!-- Proximity Guard Settings Labels -->
     <!-- Quality Settings Labels -->
@@ -445,7 +445,7 @@
     <string name="dashboard_starting_tailscale">Beginn der Tailscale-Tunnel...</string>
     <string name="dashboard_waiting_url">Ich warte auf den Tunnel URL...</string>
     <string name="dashboard_daemons_running">%1$d/%2$d Lauf</string>
-    <string name="tunnel_label_cloudflared">Wolkenblatt</string>
+    <string name="tunnel_label_cloudflared">Cloudflared</string>
     <string name="tunnel_label_zrok">Zrok</string>
     <string name="tunnel_label_tailscale">Tailscale</string>
     <!-- Daemon names — shown on the Daemons list and dashboard. -->
@@ -550,7 +550,7 @@
          or only the keepalive survived an OOM respawn. -->
     <string name="daemon_keepalive_notif_title">Overdrive aktiv</string>
     <string name="daemon_keepalive_notif_text">Überwachung von Fahrzeugsystemen</string>
-    <string name="overdrive_status_summary_title">Übertreibung</string>
+    <string name="overdrive_status_summary_title">Overdrive</string>
     <string name="overdrive_status_summary_text">Hintergrunddienste laufen</string>
     <!-- ============================================================== -->
     <!-- M3 Revamp: navigation rail + settings sub-rail + theme picker  -->
@@ -599,7 +599,7 @@
     <string name="settings_about_support_share_title">Sag es einem anderen Besitzer</string>
     <string name="settings_about_support_share_value">Jeder gemeinsame Link hilft einem anderen BYD-Besitzer, Overdrive zu entdecken.</string>
     <string name="settings_about_support_share_message">Überprüfen Sie Overdrive  Open-Source-Überwachung &amp; Dashcam für BYD: https://overdrive-5lc.pages.dev/</string>
-    <string name="settings_about_support_share_chooser">Teilen Sie Übertreibung</string>
+    <string name="settings_about_support_share_chooser">Overdrive teilen</string>
     <string name="settings_about_open_link_failed">Ich konnte die Verbindung nicht öffnen.</string>
     <string name="settings_about_open_link_copied">Keine Browser gefunden. URL kopiert: %1$s</string>
     <string name="settings_about_support_kofi_title">Brennstoff für die nächste Veröffentlichung</string>
@@ -926,10 +926,10 @@
     <!-- ============================================================
          RoadSense — road-hazard detection feature
          ============================================================ -->
-    <string name="rail_roadsense">Straßensinn</string>
-    <string name="roadsense_title">Straßensinn</string>
+    <string name="rail_roadsense">RoadSense</string>
+    <string name="roadsense_title">RoadSense</string>
     <string name="roadsense_pill_scanning">Scannen</string>
-    <string name="roadsense_pill_idle">Straßensinn</string>
+    <string name="roadsense_pill_idle">RoadSense</string>
     <string name="roadsense_status_idle">Leerlauf</string>
     <!-- VEHICLE calibration (suspension-learning) — the green/orange/red dot. Worded
          about the car, not the route, since that's what maturity actually measures. -->
@@ -967,6 +967,8 @@
     <string name="roadsense_confirm_reject">Keine Gefahr</string>
     <string name="roadsense_confirm_accept">Bestätigen</string>
     <!-- content descriptions -->
-    <string name="roadsense_cd_cal_level">Routenkalibrierungsstufe</string>
+    <string name="roadsense_cd_cal_level">Fahrzeugkalibrierungsstufe</string>
     <string name="roadsense_cd_direction">Richtung zur nächsten Gefahr</string>
+    <string name="blindspot_overlay_right">RECHTS</string>
+    <string name="blindspot_overlay_left">LASSEN</string>
 </resources>

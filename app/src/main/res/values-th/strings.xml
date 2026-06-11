@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OverDrive</string>
     <!-- Accessibility Service -->
-    <string name="accessibility_service_description">ทำให้ระบบตรวจสอบรถยนต์ OverDrive ทำงานในพื้นหลังตลอดเวลา บริการนี้จะไม่อ่านหรือโต้ตอบกับเนื้อหาบนหน้าจอ</string>
+    <string name="accessibility_service_description">ทำให้ระบบตรวจสอบรถยนต์ Overdrive ทำงานในพื้นหลังตลอดเวลา บริการนี้จะไม่อ่านหรือโต้ตอบกับเนื้อหาบนหน้าจอ</string>
     <!-- Recording Mode Labels -->
     <!-- Proximity Guard Settings Labels -->
     <!-- Quality Settings Labels -->
@@ -51,11 +51,11 @@
     <string name="cd_player_maximize">ขยายเต็มจอ</string>
     <string name="cd_player_minimize">ออกจากการแสดงเต็มจอ</string>
     <string name="cd_player_mute">เปิด/ปิดเสียง</string>
-    <string name="cd_player_quadrant_all">Show all cameras</string>
-    <string name="cd_player_quadrant_front">Show front camera</string>
-    <string name="cd_player_quadrant_right">Show right camera</string>
-    <string name="cd_player_quadrant_rear">Show rear camera</string>
-    <string name="cd_player_quadrant_left">Show left camera</string>
+    <string name="cd_player_quadrant_all">แสดงกล้องทั้งหมด</string>
+    <string name="cd_player_quadrant_front">แสดงกล้องหน้า</string>
+    <string name="cd_player_quadrant_right">แสดงกล้องด้านขวา</string>
+    <string name="cd_player_quadrant_rear">แสดงกล้องหลัง</string>
+    <string name="cd_player_quadrant_left">แสดงกล้องด้านซ้าย</string>
     <string name="cd_delete">ลบ</string>
     <string name="cd_share">Share</string>
     <string name="cd_expand">ขยาย</string>
@@ -479,7 +479,7 @@
     <string name="dialog_tailscale_reset_message">การดำเนินการนี้จะ:\n• หยุดการทำงานของ Tailscale Tunnel หากกำลังทำงานอยู่\n• ลบ Tailscale Environment ออกจากอุปกรณ์นี้\n• คุณยังจำเป็นต้องลบอุปกรณ์ออกจากหน้าควบคุมบนเว็บไซต์ของ Tailscale ด้วยตนเอง\n\nหลังการลบข้อมูล คุณจำเป็นต้องเข้าสู่ระบบใหม่อีกครั้ง\n\nคุณแน่ใจหรือไม่?</string>
     <string name="toast_resetting_tailscale">กำลังรีเซ็ต Tailscale Environment…</string>
     <string name="toast_tailscale_reset_success">รีเซ็ต Tailscale สำเร็จ กรุณาเข้าสู่ระบบเพื่อตั้งค่าใหม่</string>
-    <string name="toast_tailscale_reset_warnings">รีเซ็ตสำเร็จแต่มีคำเตือน: %1$s</string>
+    <string name="toast_tailscale_reset_warnings">รีเซ็ตสภาพแวดล้อม Tailscale แล้ว (มีคำเตือน: %1$s)</string>
     <string name="toast_tailscale_proxy_enabled">เปิดใช้งาน Tailscale Proxy เรียบร้อยแล้ว</string>
     <string name="toast_tailscale_proxy_disabled">ปิดใช้งาน Tailscale Proxy เรียบร้อยแล้ว</string>
     <string name="toast_tailscale_proxy_save_failed">บันทึกการตั้งค่า Proxy ไม่สำเร็จ</string>
@@ -594,9 +594,9 @@
          personality without being corny — short, warm, specific. -->
     <string name="settings_about_support_section">สนับสนุนโครงการโดยผู้ใช้งาน</string>
     <string name="settings_about_support_share_title">บอกต่อให้ผู้ใช้รถท่านอื่น</string>
-    <string name="settings_about_support_share_value">การแชร์ข้อมูลของคุณช่วยให้ผู้ใช้ BYD ท่านอื่นรู้จักแอปพลิเคชันนี้มากขึ้น</string>
-    <string name="settings_about_support_share_message">ลองใช้งาน OverDrive — แอปพลิเคชันกล้องหน้ารถและโหมดเฝ้าระวังแบบ Open-Source สำหรับ BYD: https://overdrive-5lc.pages.dev/</string>
-    <string name="settings_about_support_share_chooser">แชร์ OverDrive</string>
+    <string name="settings_about_support_share_value">ทุกลิงก์ที่แชร์ช่วยให้ผู้ใช้ BYD ท่านอื่นได้รู้จักกับ Overdrive</string>
+    <string name="settings_about_support_share_message">ลองใช้งาน Overdrive — แอปพลิเคชันกล้องหน้ารถและโหมดเฝ้าระวังแบบ Open-Source สำหรับ BYD: https://overdrive-5lc.pages.dev/</string>
+    <string name="settings_about_support_share_chooser">แชร์ Overdrive</string>
     <string name="settings_about_open_link_failed">ไม่สามารถเปิดลิงก์ได้</string>
     <string name="settings_about_open_link_copied">ไม่พบเว็บเบราว์เซอร์ คัดลอก URL เรียบร้อยแล้ว: %1$s</string>
     <string name="settings_about_support_kofi_title">สนับสนุนการพัฒนาเวอร์ชันถัดไป</string>
@@ -674,7 +674,7 @@
     <string name="diagnostics_settings_subtitle">การตั้งค่าแอปพลิเคชัน, ธีม และภาษา</string>
     <!-- SOTA Integrations page -->
     <string name="integrations_hero_title">บริการเสริม (Integrations)</string>
-    <string name="integrations_hero_subtitle">เชื่อมต่อ OverDrive เข้ากับบริการต่างๆ</string>
+    <string name="integrations_hero_subtitle">เชื่อมต่อ Overdrive เข้ากับบริการต่างๆ</string>
     <string name="integrations_status_unknown">แตะเพื่อกำหนดการตั้งค่า</string>
     <string name="integrations_status_configured">ตั้งค่าเรียบร้อยแล้ว</string>
     <string name="integrations_status_not_set_up">ยังไม่ได้กำหนดการตั้งค่า</string>
@@ -877,7 +877,7 @@
          provider, so translators should keep numeric placeholders intact
          (do not spell out the digits). -->
     <!-- First-launch welcome — only shown on the very first dashboard visit. -->
-    <string name="dashboard_insight_welcome">ยินดีต้อนรับ — OverDrive พร้อมเป็นระบบดูแลรถของคุณแล้ว</string>
+    <string name="dashboard_insight_welcome">ยินดีต้อนรับ — Overdrive พร้อมเป็นระบบดูแลรถของคุณแล้ว</string>
     <!-- Parking delta. %1$s = absolute SOC delta string ("8%"); %2$s = absolute kWh string ("4 kWh"). -->
     <string name="dashboard_insight_parked_charged_kwh">ชาร์จเพิ่ม %1$s (≈%2$s) ขณะจอด</string>
     <string name="dashboard_insight_parked_charged">ชาร์จเพิ่ม %1$s ขณะจอด</string>
@@ -960,4 +960,82 @@
     <!-- content descriptions -->
     <string name="roadsense_cd_cal_level">Route calibration level</string>
     <string name="roadsense_cd_direction">Direction to next hazard</string>
+    <string name="blindspot_overlay_left">ซ้าย</string>
+    <string name="camera_concurrent_probe_label">ทดสอบรองรับกล้องคู่เมื่อบูตครั้งถัดไป</string>
+    <string name="camera_concurrent_probe_subtitle">การตรวจสอบครั้งเดียวที่เปิดกล้องทั้งสองตัวพร้อมกันเพื่อยืนยันว่ารถคันนี้รองรับพาโนพร้อมกล้องหน้ารถพร้อมกันได้ ทำงานครั้งเดียวเมื่อรีสตาร์ทครั้งถัดไปขณะจอด ปล่อยปิดไว้เว้นแต่ภาพบันทึกดูผิดปกติ — ไม่จำเป็นต้องใช้และอาจขัดจังหวะการบันทึกชั่วครู่หากมีการบันทึกอยู่ขณะทำงาน</string>
+    <string name="blindspot_overlay_right">ขวา</string>
+    <string name="url_copied_no_browser">ไม่พบเบราว์เซอร์ คัดลอกลิงก์แล้ว: %1$s</string>
+    <string name="rail_hazard_map">แผนที่</string>
+    <string name="roadsense_map_title">แผนที่</string>
+    <string name="roadsense_map_route_clear">ล้าง</string>
+    <string name="roadsense_map_route_unmapped">ยังไม่ได้ทำแผนที่</string>
+    <string name="roadsense_map_back">ย้อนกลับ</string>
+    <string name="roadsense_map_recenter">จัดกึ่งกลางที่ตำแหน่งของฉัน</string>
+    <string name="roadsense_map_severity_label">ระดับความรุนแรง</string>
+    <string name="roadsense_map_type_label">ประเภท</string>
+    <string name="roadsense_map_type_unknown">ไม่ทราบ</string>
+    <string name="roadsense_map_confirm">ยืนยัน</string>
+    <string name="roadsense_map_delete">ลบ</string>
+    <string name="roadsense_map_status_candidate">ข้อเสนอแนะ</string>
+    <string name="roadsense_map_status_local">บนอุปกรณ์</string>
+    <string name="roadsense_map_status_cloud">ที่แชร์</string>
+    <string name="roadsense_map_meta_format">%1$s · ความมั่นใจ %2$d%% · %3$s</string>
+    <string name="roadsense_map_confirmed_toast">ยืนยันอันตรายแล้ว</string>
+    <string name="roadsense_map_deleted_toast">ลบอันตรายแล้ว</string>
+    <string name="roadsense_map_action_failed">ไม่สามารถเชื่อมต่อ RoadSense ได้ ลองอีกครั้ง</string>
+    <string name="roadsense_map_no_location">กำลังรอสัญญาณ GPS…</string>
+    <string name="roadsense_map_search_hint">ค้นหาปลายทาง</string>
+    <string name="roadsense_map_search_action">ค้นหา</string>
+    <string name="roadsense_map_searching">กำลังค้นหา…</string>
+    <string name="roadsense_map_no_results">ไม่พบสถานที่</string>
+    <string name="roadsense_map_pick_destination">เลือกปลายทาง</string>
+    <string name="roadsense_map_routing">กำลังค้นหาเส้นทาง…</string>
+    <string name="roadsense_map_route_failed">ไม่พบเส้นทาง ลองอีกครั้ง</string>
+    <string name="roadsense_map_need_key">เพิ่มคีย์การนำทางในการตั้งค่า RoadSense เพื่อนำทาง</string>
+    <string name="roadsense_map_rerouting">ออกนอกเส้นทาง — กำลังคำนวณใหม่…</string>
+    <string name="roadsense_map_arrived">คุณมาถึงแล้ว</string>
+    <string name="roadsense_map_nav_started">กำลังนำทางไปยัง %1$s</string>
+    <string name="roadsense_map_nav_ended">สิ้นสุดการนำทางแล้ว</string>
+    <string name="roadsense_map_end_nav">สิ้นสุดการนำทาง</string>
+    <string name="roadsense_map_zoom_in">ซูมเข้า</string>
+    <string name="roadsense_map_zoom_out">ซูมออก</string>
+    <string name="roadsense_map_hazards_filter">การแสดงอันตราย</string>
+    <string name="roadsense_map_hazards_all">แสดงอันตรายทั้งหมด</string>
+    <string name="roadsense_map_hazards_moderate">ปานกลางและรุนแรง</string>
+    <string name="roadsense_map_hazards_severe">รุนแรงเท่านั้น</string>
+    <string name="roadsense_map_hazards_hidden">ซ่อนอันตราย</string>
+    <string name="roadsense_map_poi_toggle">การชาร์จและเชื้อเพลิง</string>
+    <string name="roadsense_map_dimension_toggle">อาคาร 2D / 3D</string>
+    <string name="roadsense_map_3d_on">เปิดอาคาร 3D</string>
+    <string name="roadsense_map_3d_off">ปิดอาคาร 3D</string>
+    <string name="roadsense_map_poi_loading">กำลังค้นหาสถานีชาร์จและเติมเชื้อเพลิง…</string>
+    <string name="roadsense_map_poi_none">ไม่พบสถานีใกล้เคียง</string>
+    <string name="roadsense_map_poi_need_route">เลือกปลายทางก่อน</string>
+    <string name="roadsense_map_stop_added">เพิ่มจุดแวะแล้ว</string>
+    <string name="roadsense_map_remove_stop_action">ลบจุดแวะ</string>
+    <string name="roadsense_map_poi_navigate">นำทางมาที่นี่</string>
+    <string name="roadsense_map_poi_kind_charging">สถานีชาร์จ</string>
+    <string name="roadsense_map_poi_kind_fuel">สถานีเติมเชื้อเพลิง</string>
+    <string name="roadsense_map_poi_charging_generic">สถานีชาร์จ</string>
+    <string name="roadsense_map_poi_fuel_generic">สถานีเติมเชื้อเพลิง</string>
+    <string name="roadsense_map_route_switched">เปลี่ยนเส้นทางแล้ว</string>
+    <string name="roadsense_map_pill_severe">รุนแรง %1$d รายการ</string>
+    <string name="roadsense_map_pill_moderate">ปานกลาง %1$d รายการ</string>
+    <string name="roadsense_map_pill_minor">เล็กน้อย %1$d รายการ</string>
+    <string name="roadsense_map_offline">ข้อมูลแผนที่ใช้งานไม่ได้ขณะออฟไลน์</string>
+    <string name="roadsense_map_clear_search">ล้างการค้นหา</string>
+    <string name="roadsense_map_routes_title">เลือกเส้นทาง</string>
+    <string name="roadsense_map_routes_to">เส้นทางไปยัง %1$s</string>
+    <string name="roadsense_map_routes_cancel">ยกเลิก</string>
+    <string name="roadsense_map_route_option">เส้นทางที่ %1$d</string>
+    <string name="roadsense_map_fastest">เร็วที่สุด</string>
+    <string name="roadsense_map_start">เริ่ม</string>
+    <string name="roadsense_map_your_location">ตำแหน่งของคุณ</string>
+    <string name="roadsense_map_add_stop">เพิ่มจุดแวะ</string>
+    <string name="roadsense_map_add_stop_hint">ค้นหาจุดแวะเพื่อเพิ่ม</string>
+    <string name="roadsense_map_stop_removed">ลบจุดแวะแล้ว</string>
+    <string name="roadsense_map_remove_stop">ลบจุดแวะ</string>
+    <string name="roadsense_map_move_stop_up">เลื่อนจุดแวะขึ้น</string>
+    <string name="roadsense_map_move_stop_down">เลื่อนจุดแวะลง</string>
+    <string name="roadsense_map_max_stops">อนุญาตให้มีจุดแวะได้สูงสุด %1$d จุด</string>
 </resources>
