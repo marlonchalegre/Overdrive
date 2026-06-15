@@ -476,7 +476,7 @@
       "storage_limit_desc": "在限制到达時,自動删除最古老的"
     },
     "cdr": {
-      "delete_confirm": "如何將舊的BYDDashcam檔案移除?",
+      "delete_confirm": "如何將舊的 BYD Dashcam 檔案移除?",
       "files_deleted": {
         "one": "已删除{count}檔案",
         "other": "已删除的 {count}檔案"

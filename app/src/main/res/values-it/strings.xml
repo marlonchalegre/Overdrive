@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OverDrive</string>
     <!-- Accessibility Service -->
-    <string name="accessibility_service_description">Mantiene attivo in background il monitoraggio del veicolo OverDrive. Questo servizio non legge ne interagisce con il contenuto dello schermo.</string>
+    <string name="accessibility_service_description">Mantiene attivo in background il monitoraggio del veicolo Overdrive. Questo servizio non legge ne interagisce con il contenuto dello schermo.</string>
     <!-- Recording Mode Labels -->
     <!-- Proximity Guard Settings Labels -->
     <!-- Quality Settings Labels -->
@@ -659,9 +659,9 @@ Questa azione non puo essere annullata.</string>
          personality without being corny — short, warm, specific. -->
     <string name="settings_about_support_section">Reso possibile da persone come te</string>
     <string name="settings_about_support_share_title">Dillo a un altro proprietario</string>
-    <string name="settings_about_support_share_value">Ogni link condiviso aiuta un altro proprietario BYD a scoprire OverDrive.</string>
-    <string name="settings_about_support_share_message">Controlla OverDrive monitoraggio open source e dashcam per BYD: https://overdrive-5lc.pages.dev/</string>
-    <string name="settings_about_support_share_chooser">Condividi OverDrive</string>
+    <string name="settings_about_support_share_value">Ogni link condiviso aiuta un altro proprietario BYD a scoprire Overdrive.</string>
+    <string name="settings_about_support_share_message">Controlla Overdrive monitoraggio open source e dashcam per BYD: https://overdrive-5lc.pages.dev/</string>
+    <string name="settings_about_support_share_chooser">Condividi Overdrive</string>
     <string name="settings_about_open_link_failed">Impossibile aprire il link.</string>
     <string name="settings_about_open_link_copied">Nessun browser trovato. URL copiato: %1$s</string>
     <string name="settings_about_support_kofi_title">Fuel il prossimo rilascio</string>
@@ -669,7 +669,7 @@ Questa azione non puo essere annullata.</string>
     <string name="settings_about_license_title">Licenza</string>
     <string name="settings_about_license_value">MIT — open source. Tocca per vedere il testo completo.</string>
     <string name="settings_about_source_title">Codice sorgente</string>
-    <string name="settings_about_source_value">github.com/yash-srivastava/OverDrive-release</string>
+    <string name="settings_about_source_value">github.com/yash-srivastava/Overdrive-release</string>
     <string name="settings_about_star_title">Metti una stella su GitHub</string>
     <string name="settings_about_star_value">Ci vuole un secondo. Conta molto.</string>
     <string name="settings_about_thanks_title">Grazie</string>
@@ -739,7 +739,7 @@ Questa azione non puo essere annullata.</string>
     <string name="diagnostics_settings_subtitle">Preferenze app, tema e lingua.</string>
     <!-- SOTA Integrations page -->
     <string name="integrations_hero_title">Integrazioni</string>
-    <string name="integrations_hero_subtitle">Collega OverDrive ai tuoi servizi.</string>
+    <string name="integrations_hero_subtitle">Collega Overdrive ai tuoi servizi.</string>
     <string name="integrations_status_unknown">Tocca per configurare</string>
     <string name="integrations_status_configured">Configurato</string>
     <string name="integrations_status_not_set_up">Non configurato</string>
@@ -943,7 +943,7 @@ Questa azione non puo essere annullata.</string>
          provider, so translators should keep numeric placeholders intact
          (do not spell out the digits). -->
     <!-- First-launch welcome — only shown on the very first dashboard visit. -->
-    <string name="dashboard_insight_welcome">Benvenuto — OverDrive e ora il tuo secondo paio di occhi.</string>
+    <string name="dashboard_insight_welcome">Benvenuto — Overdrive e ora il tuo secondo paio di occhi.</string>
     <!-- Parking delta. %1$s = absolute SOC delta string ("8%"); %2$s = absolute kWh string ("4 kWh"). -->
     <string name="dashboard_insight_parked_charged_kwh">Guadagnato %1$s (≈%2$s) durante la sosta</string>
     <string name="dashboard_insight_parked_charged">Guadagnato %1$s durante la sosta</string>

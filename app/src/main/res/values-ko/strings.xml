@@ -655,7 +655,7 @@
     <string name="settings_about_support_section">당신 같은 사람들로부터</string>
     <string name="settings_about_support_share_title">다른 차주에게도 알려주세요</string>
     <string name="settings_about_support_share_value">공유된 모든 링크는 다른 BYD 소유자가 Overdrive를 발견하는 데 도움이 됩니다.</string>
-    <string name="settings_about_support_share_message">BYD에 대한 오픈소스 감시 및 대시캠을 확인하세요: https://overdrive-5lc.pages.dev/</string>
+    <string name="settings_about_support_share_message">Overdrive를 확인하세요 — BYD를 위한 오픈소스 감시 및 대시캠: https://overdrive-5lc.pages.dev/</string>
     <string name="settings_about_support_share_chooser">Overdrive 공유</string>
     <string name="settings_about_open_link_failed">링크를 열지 못했어요</string>
     <string name="settings_about_open_link_copied">브라우저가 없습니다. URL 복사: %1$s</string>

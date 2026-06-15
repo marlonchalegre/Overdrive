@@ -673,7 +673,7 @@
     <string name="roadsense_type_breaker">Hastighet ødelegger</string>
     <string name="roadsense_toggle_audio">Lyd</string>
     <string name="settings_security_stance_body">Overvåkningskontroll, opptak, avskrekkende, varsler og bakgrunnstjenester fortsetter å kjøre mens appen er låst. PIN-koden gater OverDrive-grensesnittet, noe annet.</string>
-    <string name="settings_security_toggle_subtitle_off">Av – alle kan åpne overDrive.</string>
+    <string name="settings_security_toggle_subtitle_off">Av – alle kan åpne OverDrive.</string>
     <string name="roadsense_dash_distance">—</string>
     <string name="roadsense_cd_cal_level">Rute kalibreringsnivå</string>
     <string name="settings_security_autolock_never">Aldri automatisk lås av tid</string>
@@ -714,11 +714,11 @@
     <string name="pin_lock_subtitle_wrong">Feil PIN. Prøv igjen.</string>
     <string name="settings_security_autolock_immediate">Lås umiddelbart</string>
     <string name="settings_security_title">Sikkerhet</string>
-    <string name="settings_security_toggle_subtitle_on">– PIN-kode kreves for å åpne overDrive.</string>
+    <string name="settings_security_toggle_subtitle_on">– PIN-kode kreves for å åpne OverDrive.</string>
     <string name="settings_security_stance_title">Kun UI lås</string>
     <string name="roadsense_cal_learning">Lærer kjøretøyet ditt</string>
     <string name="roadsense_sev_severe">Kraftig</string>
-    <string name="settings_security_subtitle">Lås overDrive-appen slik at passasjerer og ventiler ikke kan åpne den uten PIN-koden.</string>
+    <string name="settings_security_subtitle">Lås OverDrive-appen slik at passasjerer og ventiler ikke kan åpne den uten PIN-koden.</string>
     <string name="roadsense_unit_meters">min</string>
     <string name="roadsense_confirm_reject">Ikke en fare</string>
     <string name="settings_security_autolock_1min">Etter 1 minutt</string>

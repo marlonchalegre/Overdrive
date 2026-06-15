@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OverDrive</string>
     <!-- Accessibility Service -->
-    <string name="accessibility_service_description">ทำให้ระบบตรวจสอบรถยนต์ OverDrive ทำงานในพื้นหลังตลอดเวลา บริการนี้จะไม่อ่านหรือโต้ตอบกับเนื้อหาบนหน้าจอ</string>
+    <string name="accessibility_service_description">ทำให้ระบบตรวจสอบรถยนต์ Overdrive ทำงานในพื้นหลังตลอดเวลา บริการนี้จะไม่อ่านหรือโต้ตอบกับเนื้อหาบนหน้าจอ</string>
     <!-- Recording Mode Labels -->
     <!-- Proximity Guard Settings Labels -->
     <!-- Quality Settings Labels -->
@@ -655,8 +655,8 @@
     <string name="settings_about_support_section">สนับสนุนโครงการโดยผู้ใช้งาน</string>
     <string name="settings_about_support_share_title">บอกต่อให้ผู้ใช้รถท่านอื่น</string>
     <string name="settings_about_support_share_value">ทุกลิงก์ที่แชร์ช่วยให้ผู้ใช้ BYD ท่านอื่นได้รู้จักกับ Overdrive</string>
-    <string name="settings_about_support_share_message">ลองใช้งาน OverDrive — แอปพลิเคชันกล้องหน้ารถและโหมดเฝ้าระวังแบบ Open-Source สำหรับ BYD: https://overdrive-5lc.pages.dev/</string>
-    <string name="settings_about_support_share_chooser">แชร์ OverDrive</string>
+    <string name="settings_about_support_share_message">ลองใช้งาน Overdrive — แอปพลิเคชันกล้องหน้ารถและโหมดเฝ้าระวังแบบ Open-Source สำหรับ BYD: https://overdrive-5lc.pages.dev/</string>
+    <string name="settings_about_support_share_chooser">แชร์ Overdrive</string>
     <string name="settings_about_open_link_failed">ไม่สามารถเปิดลิงก์ได้</string>
     <string name="settings_about_open_link_copied">ไม่พบเว็บเบราว์เซอร์ คัดลอก URL เรียบร้อยแล้ว: %1$s</string>
     <string name="settings_about_support_kofi_title">สนับสนุนการพัฒนาเวอร์ชันถัดไป</string>
@@ -734,7 +734,7 @@
     <string name="diagnostics_settings_subtitle">การตั้งค่าแอปพลิเคชัน, ธีม และภาษา</string>
     <!-- SOTA Integrations page -->
     <string name="integrations_hero_title">บริการเสริม (Integrations)</string>
-    <string name="integrations_hero_subtitle">เชื่อมต่อ OverDrive เข้ากับบริการต่างๆ</string>
+    <string name="integrations_hero_subtitle">เชื่อมต่อ Overdrive เข้ากับบริการต่างๆ</string>
     <string name="integrations_status_unknown">แตะเพื่อกำหนดการตั้งค่า</string>
     <string name="integrations_status_configured">ตั้งค่าเรียบร้อยแล้ว</string>
     <string name="integrations_status_not_set_up">ยังไม่ได้กำหนดการตั้งค่า</string>
@@ -937,7 +937,7 @@
          provider, so translators should keep numeric placeholders intact
          (do not spell out the digits). -->
     <!-- First-launch welcome — only shown on the very first dashboard visit. -->
-    <string name="dashboard_insight_welcome">ยินดีต้อนรับ — OverDrive พร้อมเป็นระบบดูแลรถของคุณแล้ว</string>
+    <string name="dashboard_insight_welcome">ยินดีต้อนรับ — Overdrive พร้อมเป็นระบบดูแลรถของคุณแล้ว</string>
     <!-- Parking delta. %1$s = absolute SOC delta string ("8%"); %2$s = absolute kWh string ("4 kWh"). -->
     <string name="dashboard_insight_parked_charged_kwh">ชาร์จเพิ่ม %1$s (≈%2$s) ขณะจอด</string>
     <string name="dashboard_insight_parked_charged">ชาร์จเพิ่ม %1$s ขณะจอด</string>
