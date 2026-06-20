@@ -1390,10 +1390,11 @@ public class GpuSurveillancePipeline {
                 }
             });
             
-            // Wait for GL thread initialization (max 3 seconds)
+            // SOTA: Increased timeout (10s) to accommodate the startup
+            // delay for AVM signal protection.
             synchronized (initLock) {
                 if (!initDone[0]) {
-                    initLock.wait(3000);
+                    initLock.wait(10000);
                 }
             }
             
@@ -2007,13 +2008,15 @@ public class GpuSurveillancePipeline {
             });
             
             // Wait for camera to fully initialize and GL context to be ready.
-            // This isn't an esco-parity concern — the sleep gives MediaCodec
-            // time to consume the first encoder input frame so the
-            // INFO_OUTPUT_FORMAT_CHANGED callback fires and the encoder format
-            // is saved for reuse. Field log (camera_daemon_20260604_120145.log)
-            // showed every startRecording() returning formatAvailable=false
-            // when this sleep was skipped on dilink4 — recording never started.
-            Thread.sleep(1500);
+            // SOTA: Use polling instead of a fixed sleep to speed up startup.
+            // We wait up to 7 seconds for the camera to pass through its 
+            // Polite Startup Wait (in PanoramicCameraGpu) and reach isRunning() == true.
+            // Exits immediately once the camera is ready, minimizing recording delay.
+            long startupDeadline = System.currentTimeMillis() + 7000;
+            while (System.currentTimeMillis() < startupDeadline) {
+                if (camera != null && camera.isRunning()) break;
+                Thread.sleep(250);
+            }
 
             // Verify the camera GL-thread runnable actually completed without
             // throwing. PanoramicCameraGpu.start() posts initializeGl +
@@ -3608,7 +3611,10 @@ public class GpuSurveillancePipeline {
         try {
             synchronized (initLock) {
                 if (!initDone[0]) {
-                    initLock.wait(2000);
+                    // SOTA: Increased timeout (10s) to accommodate the startup
+                    // delay for AVM signal protection. The camera startup
+                    // can wait for up to 4s before even initializing GL.
+                    initLock.wait(10000);
                 }
             }
         } finally {
@@ -4198,7 +4204,13 @@ public class GpuSurveillancePipeline {
         boolean lockHeld = bsLifecycleLock.isHeldByCurrentThread();
         if (lockHeld) bsLifecycleLock.unlock();
         try {
-            synchronized (initLock) { if (!initDone[0]) initLock.wait(2000); }
+            synchronized (initLock) {
+                if (!initDone[0]) {
+                    // SOTA: Increased timeout (10s) to accommodate the startup
+                    // delay for AVM signal protection.
+                    initLock.wait(10000);
+                }
+            }
         } finally {
             if (lockHeld) bsLifecycleLock.lock();
         }

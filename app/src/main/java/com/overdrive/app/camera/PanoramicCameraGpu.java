@@ -775,11 +775,12 @@ public class PanoramicCameraGpu {
                     while (System.currentTimeMillis() < deadline) {
                         if (cameraCoordinator.checkNativeAppActive()) {
                             logger.info("Startup: native AVM app detected — will attach as secondary consumer");
-                            // Wait a bit more for it to fully settle
-                            try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                            // Wait a bit more for it to fully settle (500ms is enough for HAL)
+                            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
                             break;
                         }
-                        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                        // Short poll interval (200ms) for faster detection
+                        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                     }
                 }
 
