@@ -241,7 +241,7 @@ public class PanoramicCameraGpu {
     };
 
     // Render loop
-    private HandlerThread glThread;
+    private Thread glThread;
     private Handler glHandler;
     private volatile boolean running = false;
     private final Object frameSync = new Object();
@@ -770,9 +770,6 @@ public class PanoramicCameraGpu {
                     // SOTA FIX: Delay camera opening if ACC is ON to prevent AVM "no signal".
                     // We wait for the system app to claim the primary slot first.
                     if (AccMonitor.isAccOn() && cameraCoordinator != null && cameraCoordinator.isRegistered()) {
-                        com.overdrive.app.byd.BydDataCollector collector = 
-                            com.overdrive.app.byd.BydDataCollector.getInstance();
-                            
                         logger.info("Startup: ACC is ON, checking for AVM activity...");
                         
                         // We wait up to 4 seconds for the native AVM app to claim the slot.
@@ -780,7 +777,7 @@ public class PanoramicCameraGpu {
                         long deadline = System.currentTimeMillis() + 4000;
                         boolean avmDetected = false;
                         while (System.currentTimeMillis() < deadline && running) {
-                            if (collector.isAvmAppVisible() || cameraCoordinator.checkNativeAppActive()) {
+                            if (cameraCoordinator.checkNativeAppActive()) {
                                 avmDetected = true;
                                 logger.info("Startup: native AVM app detected — will attach as secondary consumer");
                                 // Wait a bit more for it to fully settle (HAL handoff)
@@ -4109,7 +4106,9 @@ public class PanoramicCameraGpu {
 
         // Stop GL thread
         if (glThread != null) {
-            glThread.quitSafely();
+            if (glHandler != null) {
+                glHandler.getLooper().quitSafely();
+            }
             try {
                 glThread.join(1000);
             } catch (InterruptedException e) {
