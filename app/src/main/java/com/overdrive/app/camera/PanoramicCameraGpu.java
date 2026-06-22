@@ -7,11 +7,9 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Looper;
 import android.view.Surface;
 
 import com.overdrive.app.logging.DaemonLogger;
-import com.overdrive.app.monitor.AccMonitor;
 import com.overdrive.app.surveillance.GpuDownscaler;
 import com.overdrive.app.surveillance.FoveatedCropper;
 import com.overdrive.app.surveillance.GpuMosaicRecorder;
@@ -106,6 +104,27 @@ public class PanoramicCameraGpu {
     //
     // Resolved at construction. Default when key is missing → legacy.
     private final boolean USE_ESCO_SURFACE_TEXTURE_PATH = resolveCameraModeFromConfig();
+
+    private static Class<?> sAvmCameraClass;
+    private static Method sRmTextureMethod;
+    private static boolean sReflectionInitialized = false;
+
+    // Array imutável estático para evitar alocações recorrentes
+    private static final float[] DEFAULT_OFFSETS = new float[]{0.75f, 0.50f, 0.00f, 0.25f};
+
+    private static synchronized void ensureReflectionCache() {
+        if (sReflectionInitialized) return;
+        try {
+            sAvmCameraClass = Class.forName("android.hardware.AVMCamera");
+            try {
+                sRmTextureMethod = sAvmCameraClass.getDeclaredMethod("rmTexture", SurfaceTexture.class, int.class);
+                sRmTextureMethod.setAccessible(true);
+            } catch (NoSuchMethodException ignored) {}
+        } catch (Throwable t) {
+            DaemonLogger.getInstance("PanoramicCameraGpu").warn("Falha ao inicializar cache de reflexão: " + t.getMessage());
+        }
+        sReflectionInitialized = true;
+    }
 
     private static boolean resolveCameraModeFromConfig() {
         try {
@@ -241,7 +260,7 @@ public class PanoramicCameraGpu {
     };
 
     // Render loop
-    private Thread glThread;
+    private HandlerThread glThread;
     private Handler glHandler;
     private volatile boolean running = false;
     private final Object frameSync = new Object();
@@ -489,8 +508,7 @@ public class PanoramicCameraGpu {
     // so that cross-thread reset is atomic (no 32-bit long tearing) and visible
     // — the GL increment racing a reset can at worst drop one increment, which
     // is benign for a phase counter read as `% stride`.
-    private volatile long recorderStrideCounter = 0;
-
+    private final java.util.concurrent.atomic.AtomicLong recorderStrideCounter = new java.util.concurrent.atomic.AtomicLong(0);
     private final float[] quadrantStripOffsetX;
     private final float[] quadrantCornerOffsetsXY;
 
@@ -755,84 +773,54 @@ public class PanoramicCameraGpu {
         }
 
         // SOTA: Use a high-priority dedicated thread for rendering (URGENT_DISPLAY).
-        // Standard HandlerThread is replaced with a custom Thread to ensure 
-        // immediate priority application and reduced overhead.
-        final java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
-        glThread = new Thread(() -> {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
-            Looper.prepare();
-            glHandler = new Handler(Looper.myLooper());
-            
-            glHandler.post(() -> {
-                try {
-                    initializeGl();
-                    
-                    // SOTA FIX: Delay camera opening if ACC is ON to prevent AVM "no signal".
-                    // We wait for the system app to claim the primary slot first.
-                    if (AccMonitor.isAccOn() && cameraCoordinator != null && cameraCoordinator.isRegistered()) {
-                        logger.info("Startup: ACC is ON, checking for AVM activity...");
-                        
-                        // We wait up to 4 seconds for the native AVM app to claim the slot.
-                        long deadline = System.currentTimeMillis() + 4000;
-                        boolean avmDetected = false;
-                        while (System.currentTimeMillis() < deadline && running) {
-                            if (cameraCoordinator.checkNativeAppActive()) {
-                                avmDetected = true;
-                                logger.info("Startup: native AVM app detected — will attach as secondary consumer");
-                                // Wait a bit more for it to fully settle (HAL handoff)
-                                synchronized (frameSync) {
-                                    try { frameSync.wait(1000); } catch (InterruptedException ignored) {}
-                                }
-                                break;
-                            }
-                            // Short poll interval for fast boot
-                            synchronized (frameSync) {
-                                try { frameSync.wait(250); } catch (InterruptedException ignored) {}
-                            }
-                        }
-                        if (!avmDetected && running) {
-                            logger.info("Startup: no native AVM app detected after wait");
-                        }
-                    }
-
-                    startCamera();
-
-                    // SOTA: Setup event callback for HAL error detection (-10086, 8)
-                    if (cameraCoordinator != null && cameraObj != null) {
-                        cameraCoordinator.setupEventCallback(cameraObj);
-                    }
-
-                    // Tier 1 wiring: the AI-lane GL thread needs the camera frame seq
-                    // and texture id. Capture into a field for lazy bring-up.
-                    this.aiCameraStateRef = new AiLaneGl.CameraState() {
-                        @Override public int getCameraTextureId() { return cameraTextureId; }
-                        @Override public long getFrameSeq()      { return cameraFrameSeq.get(); }
-                    };
-
-                    running = true;
-
-                    // Start render loop
-                    glHandler.post(this::renderLoop);
-
-                    // Start watchdog
-                    startWatchdog();
-
-                    logger.info("GPU camera pipeline started (URGENT_DISPLAY priority)");
-                } catch (Exception e) {
-                    logger.error("Failed to start GPU pipeline", e);
-                } finally {
-                    startLatch.countDown();
-                }
-            });
-            
-            Looper.loop();
-        }, "GL-RenderLoop");
+        // Standard HandlerThread is used with priority override in onLooperPrepared.
+        glThread = new HandlerThread("GL-RenderLoop") {
+            @Override
+            protected void onLooperPrepared() {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
+            }
+        };
         glThread.start();
-        
-        try {
-            // Wait for thread to initialize glHandler so subsequent calls don't NPE
-            startLatch.await(2000, java.util.concurrent.TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ignored) {}
+        glHandler = new Handler(glThread.getLooper());
+
+        // Tier 1 wiring: the AI-lane GL thread needs the camera frame seq
+        // and texture id. Capture into a field for lazy bring-up.
+        this.aiCameraStateRef = new AiLaneGl.CameraState() {
+            @Override public int getCameraTextureId() { return cameraTextureId; }
+            @Override public long getFrameSeq()      { return cameraFrameSeq.get(); }
+        };
+
+        if (sentry != null) {
+            sentry.setCameraTargetFps(targetFps);
+        }
+
+        // Initialize on GL thread
+        glHandler.post(() -> {
+            try {
+                initializeGl();
+                
+                // Set running flag BEFORE starting logic that checks it
+                running = true;
+
+                startCamera();
+
+                // SOTA: Setup event callback for HAL error detection (-10086, 8)
+                if (cameraCoordinator != null && cameraObj != null) {
+                    cameraCoordinator.setupEventCallback(cameraObj);
+                }
+
+                // Start render loop
+                glHandler.post(this::renderLoop);
+
+                // Start watchdog
+                startWatchdog();
+
+                logger.info("GPU camera pipeline started (High-priority GL thread)");
+            } catch (Exception e) {
+                logger.error("Failed to start GPU pipeline", e);
+                running = false;
+            }
+        });
     }
 
     /**
@@ -916,7 +904,7 @@ public class PanoramicCameraGpu {
         // Log GL info (now that context is current)
         GlUtil.logGlInfo();
 
-        // Create camera texture (OES type for external camera)
+        // Create camera texture (OES type for external camera) 
         cameraTextureId = GlUtil.createExternalTexture();
         windshieldTextureId = GlUtil.createExternalTexture();
 
@@ -1365,13 +1353,10 @@ public class PanoramicCameraGpu {
         SurfaceTexture st = cameraSurfaceTexture;
         if (cam == null || st == null) return;
         try {
-            Class<?> avmClass = Class.forName("android.hardware.AVMCamera");
-            Method mRmTexture = avmClass.getDeclaredMethod(
-                    "rmTexture", SurfaceTexture.class, int.class);
-            mRmTexture.setAccessible(true);
-            mRmTexture.invoke(cam, st, cameraSurfaceMode);
-        } catch (NoSuchMethodException ignored) {
-            // older HAL builds without rmTexture — close() handles it
+            ensureReflectionCache(); // Garante o carregamento único e veloz
+            if (sRmTextureMethod != null) {
+                sRmTextureMethod.invoke(cam, st, cameraSurfaceMode);
+            }
         } catch (Throwable t) {
             logger.warn("rmTexture failed: " + t.getMessage());
         }
@@ -2252,7 +2237,7 @@ public class PanoramicCameraGpu {
 
             if (r != 0 || g != 0 || b != 0) probeNonZeroFrames++;
 
-            long now = System.currentTimeMillis();
+            long now = System.nanoTime();
             if (now - probeLastLogMs >= PROBE_LOG_INTERVAL_MS) {
                 probeLastLogMs = now;
                 long sampled = probeFrameCount / PROBE_EVERY_N_FRAMES;
@@ -2499,7 +2484,7 @@ public class PanoramicCameraGpu {
     /** Periodic diagnostic for the ImageReader path. Throttled to align with
      *  the 2-minute Stats log so it rides along instead of spamming. */
     private void maybeLogImageReaderDiag() {
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime();
         if (now - lastIrDiagLogMs < STATS_INTERVAL_MS) return;
         lastIrDiagLogMs = now;
         logger.info(String.format(
@@ -2526,12 +2511,11 @@ public class PanoramicCameraGpu {
             synchronized (frameSync) {
                 if (!imagePending && !stFramePending) {
                     try {
-                        // OTIMIZAÇÃO H4: Timeout reduzido para 50 ms. Impede que a thread
-                        // durma por muito tempo caso o sinal do HAL seja perdido ou chegue
-                        // logo após o início do wait, mantendo o frame pacing fluido.
-                        frameSync.wait(50);
+                        // Retornado para 100ms. O timeout de 50ms causava dessincronização
+                        // e "spinning" do Handler, quebrando o frame pacing.
+                        frameSync.wait(100);
                     } catch (InterruptedException e) {
-                        // Continue
+                        Thread.currentThread().interrupt();
                     }
                 }
                 imagePending = false;
@@ -2828,8 +2812,8 @@ public class PanoramicCameraGpu {
                 // skipped frames MediaCodec gets no input, lowering the effective
                 // recording rate. Stride 1 = every frame (default).
                 int stride = recorderFrameStride;
-                boolean drawThisFrame = stride <= 1 || (recorderStrideCounter % stride) == 0;
-                recorderStrideCounter++;
+                boolean drawThisFrame = stride <= 1 || (recorderStrideCounter.get() % stride) == 0;
+                recorderStrideCounter.incrementAndGet();
                 if (drawThisFrame) {
                     localRecorder.drawFrame(cameraTextureId, windshieldTextureId,
                             windshieldStarted && windshieldFrameReady, currentFrameTimestampNs);
@@ -3035,15 +3019,20 @@ public class PanoramicCameraGpu {
                 releaseAiLaneOnGlThread();
             }
             AiLaneGl localAiLane = aiLaneGl;
+            // PASS 2 + 3: AI lane - Apenas trata a sinalização da thread secundária
             if (localAiLane != null && localAiLane.isRunning() && aiLaneNeeded) {
-                // OTIMIZAÇÃO: Executa o glFlush apenas no frame em que a IA realmente
-                // realizará a leitura de pixels (modulo check), reduzindo chamadas
-                // de sistema IOCTL para o driver Adreno desnecessárias.
                 if (cameraFrameSeq.get() % AI_READBACK_FRAME_MODULO == 0) {
+                    // Força o despacho imediato dos comandos GL pendentes nesta thread
+                    // antes que a thread de IA tente ler a textura compartilhada
                     android.opengl.GLES20.glFlush();
                     localAiLane.notifyFrame(cameraFrameSeq.get());
                 }
             }
+
+            // CORREÇÃO DEFINITIVA: O glFlush() tem de ser totalmente ISOLADO e INCONDICIONAL.
+            // Executado no final do frame, garante que tanto os comandos do Encoder (gravação)
+            // como os do AVM (ecrã do carro) sejam despachados imediatamente para a GPU.
+            android.opengl.GLES20.glFlush();
 
             // Per-stage timing roll-up. Track only the worst frame per 30 s
             // window so the log line stays bounded; the worst frame is what
@@ -4105,9 +4094,7 @@ public class PanoramicCameraGpu {
 
         // Stop GL thread
         if (glThread != null) {
-            if (glHandler != null) {
-                glHandler.getLooper().quitSafely();
-            }
+            glThread.quitSafely();
             try {
                 glThread.join(1000);
             } catch (InterruptedException e) {
@@ -4282,34 +4269,18 @@ public class PanoramicCameraGpu {
      * Releases OpenGL resources.
      */
     private void releaseGl() {
-        // Shut down the AI worker FIRST so any in-flight processFrame
-        // completes before we tear down the consumers it might still
-        // reference. The worker's drain timeout caps this at ~2s.
         if (aiLaneWorker != null) {
             try { aiLaneWorker.shutdown(); } catch (Throwable ignored) {}
             aiLaneWorker = null;
         }
 
-        // Tier 1: shut down the AI-lane GL thread before destroying the
-        // encoder EGL context. The lane's shared context lives in the same
-        // share group as eglCore — if eglCore went down first, the lane's
-        // textures/programs would become orphans and its GL teardown would
-        // log spurious errors. Order: shut lane (releases its GL state on
-        // its own thread, including the foveated cropper FBOs), then we
-        // can safely tear down eglCore here.
         if (aiLaneGl != null) {
             try { aiLaneGl.shutdown(); } catch (Throwable ignored) {}
             aiLaneGl = null;
         }
-        // foveatedCropper.release() is called by AiLaneGl.shutdown() above
-        // (the cropper's GL resources live in the AI-lane context). Just
-        // null the reference here.
+
         foveatedCropper = null;
 
-        // Tear down the dialog-preview sampler. It owns its own EGL context
-        // (shared with our eglCore) on its own HandlerThread; if we don't
-        // release it the context outlives this pipeline instance and leaks
-        // EGL handles every time the daemon restarts.
         synchronized (this) {
             if (highResSampler != null) {
                 try { highResSampler.release(); } catch (Throwable ignored) {}
@@ -4317,55 +4288,65 @@ public class PanoramicCameraGpu {
             }
         }
 
-        stopWindshieldCameraOnGlThread();
+        try { stopWindshieldCameraOnGlThread(); } catch (Throwable t) { logger.warn("Erro windshield em releaseGl: " + t.getMessage()); }
+        try { releaseCameraConsumer(); } catch (Throwable t) { logger.warn("Erro consumer em releaseGl: " + t.getMessage()); }
 
-        // Releases whichever consumer (SurfaceTexture or ImageReader) is active.
-        releaseCameraConsumer();
-
-        // Tear down the ImageReader callback thread (full shutdown only —
-        // recreateCameraSurface keeps it alive across camera re-attach).
         if (imageReaderThread != null) {
             try { imageReaderThread.quitSafely(); } catch (Throwable ignored) {}
             imageReaderThread = null;
             imageReaderHandler = null;
         }
 
-        if (cameraTextureId != 0) {
-            GlUtil.deleteTexture(cameraTextureId);
-            cameraTextureId = 0;
-        }
-        if (windshieldTextureId != 0) {
-            GlUtil.deleteTexture(windshieldTextureId);
-            windshieldTextureId = 0;
-        }
+        try {
+            if (cameraTextureId != 0) {
+                GlUtil.deleteTexture(cameraTextureId);
+                cameraTextureId = 0;
+            }
+        } catch (Throwable t) { logger.warn("Erro ao deletar cameraTextureId: " + t.getMessage()); }
 
-        // OTIMIZAÇÃO: Limpeza explícita dos recursos alocados pelo probe.
-        // Evita vazamento de memória gráfica (OOM) no driver kgsl da Adreno
-        // após múltiplos ciclos de reinicialização.
-        if (probeFbo != 0) {
-            android.opengl.GLES20.glDeleteFramebuffers(1, new int[]{probeFbo}, 0);
-            probeFbo = 0;
-        }
-        if (probeColorTex != 0) {
-            android.opengl.GLES20.glDeleteTextures(1, new int[]{probeColorTex}, 0);
-            probeColorTex = 0;
-        }
-        if (probeProgram != 0) {
-            android.opengl.GLES20.glDeleteProgram(probeProgram);
-            probeProgram = 0;
-        }
+        try {
+            if (windshieldTextureId != 0) {
+                GlUtil.deleteTexture(windshieldTextureId);
+                windshieldTextureId = 0;
+            }
+        } catch (Throwable t) { logger.warn("Erro ao deletar windshieldTextureId: " + t.getMessage()); }
 
-        if (dummySurface != null) {
-            eglCore.destroySurface(dummySurface);
-            dummySurface = null;
-        }
+        try {
+            if (probeFbo != 0) {
+                android.opengl.GLES20.glDeleteFramebuffers(1, new int[]{probeFbo}, 0);
+                probeFbo = 0;
+            }
+        } catch (Throwable ignored) {}
 
-        if (eglCore != null) {
-            eglCore.release();
-            eglCore = null;
-        }
+        try {
+            if (probeColorTex != 0) {
+                android.opengl.GLES20.glDeleteTextures(1, new int[]{probeColorTex}, 0);
+                probeColorTex = 0;
+            }
+        } catch (Throwable ignored) {}
 
-        logger.info( "OpenGL resources released");
+        try {
+            if (probeProgram != 0) {
+                android.opengl.GLES20.glDeleteProgram(probeProgram);
+                probeProgram = 0;
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            if (dummySurface != null && eglCore != null) {
+                eglCore.destroySurface(dummySurface);
+            }
+        } catch (Throwable t) { logger.warn("Erro ao destruir dummySurface: " + t.getMessage()); }
+        dummySurface = null;
+
+        try {
+            if (eglCore != null) {
+                eglCore.release();
+            }
+        } catch (Throwable t) { logger.warn("Erro crítico ao liberar eglCore: " + t.getMessage()); }
+        eglCore = null;
+
+        logger.info("OpenGL resources released (Teardown fortificado com sucesso)");
     }
 
     /**
@@ -4609,7 +4590,7 @@ public class PanoramicCameraGpu {
             // the control thread is a benign racy hint — worst case the first
             // post-change draw lands one frame early/late, cosmetic. It is read
             // as `% stride` so no torn-value hazard.
-            recorderStrideCounter = 0;
+            recorderStrideCounter.set(0);
             logger.info("Recorder frame stride set to " + clamped
                     + " (effective recording rate ≈ cameraFps/" + clamped + ")");
         }
@@ -4638,7 +4619,7 @@ public class PanoramicCameraGpu {
             recorderLaneEnabled = enabled;
             // Reset the stride phase so re-enabling starts on a drawn frame
             // (mirrors setRecorderFrameStride's reset rationale).
-            if (enabled) recorderStrideCounter = 0;
+            if (enabled) recorderStrideCounter.set(0);
             logger.info("Recorder lane " + (enabled ? "ENABLED" : "DISABLED (PASS 1A skipped)"));
         }
     }
@@ -4802,13 +4783,11 @@ public class PanoramicCameraGpu {
     public byte[] sampleFullResMosaicJpeg() {
         HighResPreviewSampler sampler = ensureHighResSampler();
         if (sampler == null || cameraTextureId == 0) {
-            logger.warn("sampleFullResMosaicJpeg early-exit sampler="
-                    + (sampler != null) + " textureId=" + cameraTextureId);
+            logger.warn("sampleFullResMosaicJpeg early-exit sampler=" + (sampler != null) + " textureId=" + cameraTextureId);
             return null;
         }
-        float[] offsets = quadrantStripOffsetX != null
-                ? quadrantStripOffsetX.clone()
-                : new float[]{0.75f, 0.50f, 0.00f, 0.25f};
+        // Usa a referência imutável estática em vez de alocar arrays curtos e clonar continuamente
+        float[] offsets = quadrantStripOffsetX != null ? quadrantStripOffsetX : DEFAULT_OFFSETS;
         return sampler.sampleFullMosaicJpeg(cameraTextureId, width, height, offsets);
     }
 
@@ -4948,7 +4927,7 @@ public class PanoramicCameraGpu {
      * Provides breakdown by component to identify bottlenecks.
      */
     private void checkCpuUsage() {
-        long now = System.currentTimeMillis();
+        long now = System.nanoTime();
         if (now - lastCpuCheckTime < CPU_CHECK_INTERVAL_MS) {
             return;
         }
