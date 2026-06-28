@@ -33,6 +33,18 @@ public class SurveillanceEngineGpu {
     // For THREAT_MEDIUM (approaching), the loitering time setting adds additional delay.
     private static final long SUSTAINED_MOTION_BASE_MS = 500;
 
+    // Track-anchored confirmation recency window. A held in-zone person track may
+    // substitute for a within-sequence YOLO confirmation (so a person pacing
+    // across the zone boundary keeps the fast trigger path) ONLY if a real YOLO
+    // confirmation occurred within this window. The native track's "active" flag
+    // has NO pre-recording liveness — trackerUpdate (NCC age-out + heartbeat
+    // teardown) runs only while recording — so a track seeded for a person who
+    // then LEFT stays frozen-active in-zone indefinitely. Without a recency gate,
+    // that stale zombie would certify a LATER unrelated shadow/leaf burst as
+    // "confirmed" and bypass the AI-suppression gate. A few seconds comfortably
+    // covers a real zone-boundary re-entry while rejecting a minutes-old zombie.
+    private static final long TRACK_ANCHOR_RECENCY_MS = 5000;
+
     // FLAG / SHADOW FALSE-POSITIVE GUARD.
     // A waving flag (or a sweeping cast shadow) is genuine, spatially-anchored
     // pixel motion: its connected-component centroid barely drifts, so the
@@ -168,6 +180,13 @@ public class SurveillanceEngineGpu {
     // This makes AI-based background subtraction effective against ALL lighting artifacts,
     // not just the deterrent flash.
     private volatile long lastAiConfirmationTimeMs = 0;  // When YOLO last found a real object
+    // When YOLO last confirmed a PERSON specifically. The track-anchored
+    // confirmation + standing-person-immunity recency gates key on THIS (not the
+    // class-agnostic timestamp): a held in-zone track is classId==0 (person), so
+    // its "freshness" must be backed by a recent PERSON hit. Keying on the
+    // class-agnostic timestamp let a passing CAR/BIKE certify a stale zombie
+    // person track as fresh, firing a false recording on an unrelated burst.
+    private volatile long lastPersonConfirmationTimeMs = 0;
     
     // Detection mode
     private boolean useObjectDetection = false;
@@ -461,6 +480,55 @@ public class SurveillanceEngineGpu {
     // wherever lastActors is written.
     private volatile Actor.Severity eventPeakSeverity = null;
 
+    // Event-peak actor retention. lastActors is the INSTANTANEOUS live snapshot,
+    // continuously overwritten and TTL-pruned (TRACK_TTL_MS=5s). The JSON/SRT/stats
+    // headline is built from that snapshot at event END — so an actor that was
+    // significant DURING the event but departed before it ended (a person who came
+    // very-close then walked away) is pruned and ERASED from the summary, leaving a
+    // lingering far car as the misleading headline (observed on-car: SRT/tags say
+    // "vehicle/far" while the timeline spans correctly recorded "person"). This map
+    // accumulates each actor at its most-significant moment (highest severity; ties
+    // broken by closest proximity) across the WHOLE event, keyed by actorId, NEVER
+    // pruned, reset per event. It is UNIONed into the actor list handed to
+    // stopAndWrite so a departed close person survives in the JSON actors[], stats
+    // (peakSeverity/peakProximity/personCount), and SRT. Same per-AI-frame update
+    // site as updateEventPeakSeverity; guarded by recordingGeneration like lastActors.
+    private final java.util.Map<Long, Actor> eventPeakActors =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    // Event-level latches for the "empty bright motion event" discard (the
+    // shadow-over-parked-car false positive: a sunlit surface, a sweeping shadow
+    // classed MEDIUM(approach), parked-car YOLO boxes overlapping the shadow's
+    // motion blocks open the AI gate, yet the ActorTracker ends with 0 real
+    // actors). All event-scoped: reset in startRecording alongside eventPeakActors,
+    // read once in stopRecording's shouldDiscardEvent(). Volatile — written on the
+    // engine + aiExecutor threads, read on the engine thread at stop.
+    private volatile boolean eventTriggerWasMotionOnly = false;  // motion-source MEDIUM trigger, not tracker/HIGH/deferred-person
+    private volatile boolean eventEverApproaching = false;       // any non-static actor read APPROACHING this event
+    private volatile boolean eventEverSawPerson = false;         // any YOLO-classified PERSON this event (any conf/sev/static) → hard KEEP
+    private volatile boolean eventEverSawMovingObject = false;   // any YOLO-classified MOVING (!isStaticForTimeline) vehicle/bike/animal → hard KEEP (parked cars excluded — they are the FP target)
+    private volatile boolean eventTriggerWasLateralMass = false; // trigger was a side-cam proximity-mass override → possible real lateral actor a fisheye-distorted YOLO can't classify → hard KEEP
+    private volatile boolean eventTriggerWasAiTimeout = false;    // trigger fired on the AI-timeout fallback with NO in-sequence YOLO confirmation → could be a YOLO-missed real actor → hard KEEP
+    private volatile float   eventMaxLuma = 0f;                  // brightest quadrant meanLuma seen while recording
+    private volatile float   eventMinLuma = Float.MAX_VALUE;     // darkest non-black quadrant meanLuma seen while recording
+    // Every finalized segment of the CURRENT event (the final segment is
+    // currentEventFile; earlier ones are added by the rotation listener). The
+    // discard decision is whole-event, so a discard must delete ALL of them, not
+    // just the final segment. CopyOnWriteArrayList — added on the finalizer
+    // thread, read on the engine thread at stop.
+    private final java.util.List<File> eventSegmentFiles =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+    // Config-flag cache for the discard feature (default OFF → byte-identical).
+    // 110, NOT 150: the BYD ISP clamps whole-quadrant mean luma to ~122 even in
+    // full sun (motion_pipeline_v2.cpp:874; daytime sits ~115-130, night ~75-85),
+    // so a 150 floor is almost never satisfiable and the feature would be inert
+    // on-device. 110 sits in the safe gap — ABOVE the night real-person miss
+    // (brightest quadrant ~96 → still KEEP) and the close-zone miss (46-61 →
+    // still KEEP via this + the dark floor), BELOW the daytime clamp so a genuine
+    // bright FP can actually clear it.
+    private static final float DISCARD_BRIGHT_LUMA_THRESHOLD = 110f;  // event must be bright everywhere
+    private static final float DISCARD_DARK_FLOOR = 70f;             // no quadrant may be dark (protects low-light/close-zone real person)
+
     // Filename of the last event whose FINAL notification was emitted. Guards
     // against a double final-send when stopRecording() is entered twice for one
     // event (disable() on the control thread racing the engine's post-record
@@ -473,20 +541,103 @@ public class SurveillanceEngineGpu {
             new java.util.concurrent.atomic.AtomicReference<>(null);
 
     /** Latch the event peak from a fresh actor snapshot (non-static actors only). */
-    private void updateEventPeakSeverity(java.util.List<Actor> snapshot) {
+    private void updateEventPeakSeverity(java.util.List<Actor> snapshot, long gen) {
         if (snapshot == null || snapshot.isEmpty()) return;
+        // TOCTOU close: this runs on the aiExecutor thread; between the caller's
+        // generation check (hundreds of ms upstream, before detect()) and here, a
+        // new event's startRecording() can bump the generation + clear
+        // eventPeakActors. Re-check the generation ADJACENT to the mutations so a
+        // preempted gap-epoch lambda can't inject a stale actor (or resurrect the
+        // scalar peak) into the next event's freshly-cleared summary.
+        if (recordingGeneration.get() != gen) return;
         Actor.Severity max = eventPeakSeverity;
         for (Actor a : snapshot) {
+            // Latch that a PERSON was YOLO-classified at all this event — a hard
+            // KEEP for the discard (clause: eventEverSawPerson). Done BEFORE the
+            // static-skip below and independent of confirmed/severity so a real
+            // person the retain gate at :578 drops (unconfirmed 1-2 frame
+            // far/mid lateral crosser at NOTICE) still protects its clip. Person
+            // evidence can only ever PROTECT a clip, never delete one.
+            if (a.classGroup == Actor.ClassGroup.PERSON) eventEverSawPerson = true;
+            // Mirror the person KEEP for a MOVING vehicle/bike. A YOLO-classified
+            // car/bike that is NOT timeline-static is a real moving object — the
+            // discard must never delete it even if it stayed at NOTICE (a close
+            // vehicle paralleling the car never escalates above NOTICE, so the
+            // eventPeakActors retain gate at :578 drops it). CRUCIALLY gated on
+            // !isStaticForTimeline so a PARKED car (the shadow-FP's whole reason
+            // to exist) is NOT protected and the event stays discardable.
+            if (!a.isStaticForTimeline
+                    && (a.classGroup == Actor.ClassGroup.VEHICLE
+                        || a.classGroup == Actor.ClassGroup.BIKE
+                        || a.classGroup == Actor.ClassGroup.ANIMAL)) {
+                // ANIMAL is forced to NOTICE by SeverityClassifier and never
+                // enters eventPeakActors (retain gate needs >NOTICE), so without
+                // this a real moving dog/deer in a bright lot would be discarded.
+                eventEverSawMovingObject = true;
+            }
             // Skip non-person statics (parked cars — SeverityClassifier forces
             // them to NOTICE anyway) but KEEP a static PERSON: a loiterer who
             // stood still is the threat, and the gate already treats it CRITICAL.
-            if (a.isStatic && a.classGroup != Actor.ClassGroup.PERSON) continue;
+            // Use the timeline-static superset so a parked car that never latched
+            // the severity-path isStatic under sparse cadence is also skipped
+            // (isStaticForTimeline == isStatic for PERSON, so a loiterer is kept).
+            if (a.isStaticForTimeline && a.classGroup != Actor.ClassGroup.PERSON) continue;
+            // Latch whether any NON-STATIC actor ever approached this event — a
+            // discard clause (clause 4). Non-static only, so a parked car's
+            // occlusion-jitter that briefly reads APPROACHING on a still-NOTICE
+            // actor is excluded (matches the eventPeakActors retain guard below).
+            if (!a.isStaticForTimeline && a.trend == Actor.Trend.APPROACHING) {
+                eventEverApproaching = true;
+            }
             if (a.peakSeverity != null
                     && (max == null || a.peakSeverity.ordinal() > max.ordinal())) {
                 max = a.peakSeverity;
             }
+            // Event-peak actor retention: remember this actor at its most
+            // significant moment so it survives TTL-prune for the end-of-event
+            // summary. Keep the version with higher peakSeverity; tie-break on
+            // closer peakProximity (lower ordinal). Same static-skip as above so a
+            // parked car never enters (it can't out-rank a real actor anyway).
+            //
+            // THREAT GATE (non-person): the isStatic skip above evaluates BEFORE a
+            // vehicle latches isStatic (vehicles need 3 observations to reach
+            // stableFrames>=2), so a parked car's FRAME-1 copy has isStatic=false
+            // and would be stored, frozen (never re-pruned), then unioned back into
+            // actors[]/SRT/stats at event-end — defeating every downstream
+            // !a.isStatic gate and resurfacing the parked car as a "vehicle".
+            // Retain a NON-PERSON actor ONLY once it actually became a threat:
+            // peakSeverity above NOTICE. A genuinely approaching CLOSE/VERY_CLOSE
+            // vehicle/bike already latches peakSeverity>NOTICE via SeverityClassifier,
+            // so recall is preserved; a momentary occlusion-jitter that reads
+            // trend==APPROACHING on a still-NOTICE parked car is NOT retained (the
+            // old unguarded `trend==APPROACHING` clause froze exactly that frame —
+            // isStaticForTimeline=false — and resurfaced the parked car). A
+            // CONFIRMED PERSON is always retained (the departed-close-person
+            // caption this map exists for), including a static loiterer — but a
+            // 1-2 frame flicker-person (confirmed==false) is NOT, so a one-frame
+            // YOLO false-positive can't add a spurious +1 person to the summary.
+            boolean retain = (a.classGroup == Actor.ClassGroup.PERSON && a.confirmed)
+                    || (a.peakSeverity != null && a.peakSeverity.ordinal() > Actor.Severity.NOTICE.ordinal());
+            if (retain) {
+                Actor prev = eventPeakActors.get(a.actorId);
+                if (prev == null || isMoreSignificant(a, prev)) {
+                    eventPeakActors.put(a.actorId, a);
+                }
+            }
         }
         eventPeakSeverity = max;
+    }
+
+    /** True if {@code a} is a "more significant" peak than {@code b}: higher
+     *  severity, or equal severity but closer proximity. Used to retain the best
+     *  moment of each actor across an event for the forensic summary. */
+    private static boolean isMoreSignificant(Actor a, Actor b) {
+        int sa = a.peakSeverity != null ? a.peakSeverity.ordinal() : 0;
+        int sb = b.peakSeverity != null ? b.peakSeverity.ordinal() : 0;
+        if (sa != sb) return sa > sb;
+        int pa = a.peakProximity != null ? a.peakProximity.ordinal() : Integer.MAX_VALUE;
+        int pb = b.peakProximity != null ? b.peakProximity.ordinal() : Integer.MAX_VALUE;
+        return pa < pb;  // smaller ordinal = closer
     }
 
     /** Higher of two severities; null is treated as "no opinion" (lowest). */
@@ -1373,6 +1524,23 @@ public class SurveillanceEngineGpu {
         // demote any result that wouldn't pass its own effective gates.
         applyQuadrantOverrides(results);
 
+        // Accumulate per-tick min/max quadrant luma WHILE RECORDING, for the
+        // empty-bright-motion discard's brightness clauses. The existing avgLuma
+        // loop runs only inside the every-500-frames stats block, too coarse to
+        // characterize a short event — sample every recording tick instead. Guard
+        // meanLuma>0 so an inactive/black quadrant can't spuriously trip the dark
+        // floor (which would wrongly BLOCK a valid discard). Cheap: 4 compares,
+        // only while recording.
+        if (recording) {
+            for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) {
+                float l = results[q].meanLuma;
+                if (l > 0f) {
+                    if (l > eventMaxLuma) eventMaxLuma = l;
+                    if (l < eventMinLuma) eventMinLuma = l;
+                }
+            }
+        }
+
         // Check if any quadrant detected motion at MEDIUM or higher threat.
         int maxThreat = pipelineV2.getMaxThreatLevel();
         boolean anyMotion = maxThreat >= MotionPipelineV2.THREAT_MEDIUM;
@@ -1418,7 +1586,133 @@ public class SurveillanceEngineGpu {
                 }
             }
         }
-        
+
+        // STANDING-PERSON IMMUNITY (motion-block decay, not brightness).
+        // A person who walks up and then STANDS STILL sheds almost all motion
+        // blocks: frame-differencing sees nothing when nothing moves, so the
+        // native classifier drops them from MEDIUM(approach) to LOW(pass) (their
+        // sparse edge-blocks jitter the centroid past the loiter radius, they're
+        // not translating toward centre, and block-mass falls under the 0.15
+        // side-camera threshold). At that point anyMotion goes false, the
+        // sequence falls into the no-motion gap branch, and motionDuration
+        // (lastMotionTime − firstMotionTime) FREEZES at the ~1s of walk-up —
+        // it never reaches the 3s sustained bar, so a person standing dead-still
+        // 1.6 m from the car never records (observed on-car: "lasted=0.9s,
+        // required=3.0s (tracker was active)"). The brightness-immunity branch
+        // above is the intended safety net but only deploys when blocks were
+        // killed by a light change; a normally-lit standing person never trips
+        // brightnessSuppressed, so it never engages.
+        //
+        // Fix: keep anyMotion=true when an in-zone YOLO-SEEDED PERSON TRACKER
+        // holds a lock, regardless of motion-block threat. This keeps the
+        // sequence on the inline path where motionDuration = now − firstMotionTime
+        // grows with wall-clock and crosses the trigger threshold. FP-safe: it
+        // requires an actual texture-tracker lock on a YOLO-classified person
+        // (classId==0) whose bbox bottom is inside the configured zone — a
+        // tracker is only ever seeded from a real YOLO person detection, so
+        // shadows / leaves / flags / headlight sweeps can never satisfy it. The
+        // downstream trigger still applies the normal AI-confirmation gate, so
+        // this only revives sequences a real, already-detected person produced.
+        //
+        // REVIVE-ONLY GUARD (firstMotionTime != 0): this branch may only KEEP AN
+        // ALREADY-RUNNING sequence alive — it must NEVER start a fresh one from a
+        // static track. Critical: native track teardown (NCC age-out + YOLO
+        // heartbeat drop) runs only inside the `if (recording)` block, so after a
+        // recording force-stops at the 3× hard ceiling the person's tracker stays
+        // "active" indefinitely (a zombie). Without this guard, that immortal
+        // in-zone person track would re-arm a brand-new sequence every frame; with
+        // zero current motion YOLO never re-dispatches (getHighestThreatQuadrant
+        // returns -1) so it can't be torn down, and ~5s later the AI-timeout
+        // fallback fires a fresh recording — a self-perpetuating 30s-clip / 5s-gap
+        // storm that leaks MediaCodec slots until SIGABRT (the exact failure mode
+        // the AI-confirm + min-gap rate-limits exist to prevent). Requiring an
+        // already-latched firstMotionTime means revival only happens mid-walk-up
+        // (firstMotionTime set from real MEDIUM motion at ~:1671 before the person
+        // stopped) — a zombie track post-stop, where firstMotionTime was reset to
+        // 0, can never satisfy it. Defense-in-depth: stopRecording() and the hard
+        // ceiling also drop all tracks so the zombie can't persist at all.
+        //
+        // YOLO-RECENCY GATE (now - lastAiConfirmationTimeMs <= TRACK_ANCHOR_RECENCY_MS):
+        // the revive-only guard alone is not enough for the PRE-recording case. If a
+        // person stood in-zone long enough to start a sequence (firstMotionTime set)
+        // then LEFT before the sequence triggered, the native track is NOT torn down
+        // (teardown is recording-gated) and stays a frozen in-zone "zombie". With
+        // firstMotionTime still set (no trigger, no reset yet), this branch would
+        // keep reviving anyMotion off the zombie and the AI-timeout fallback could
+        // fire a recording of an EMPTY scene. Mirror the recency gate the
+        // track-anchored-confirmation sibling already uses: only a track backed by a
+        // genuine YOLO hit within the last TRACK_ANCHOR_RECENCY_MS keeps immunity. A
+        // truly-present standing person is continuously re-confirmed (heartbeat /
+        // early-AI), refreshing lastAiConfirmationTimeMs, so the legitimate fix
+        // survives; a departed-person zombie's last confirmation goes stale and
+        // immunity lapses, letting the sequence end normally.
+        boolean recentYoloForImmunity = lastPersonConfirmationTimeMs > 0
+                && (now - lastPersonConfirmationTimeMs) <= TRACK_ANCHOR_RECENCY_MS;
+        // !isAiRunning: the immunity branch now WRITES the native tracker
+        // (trackerUpdate below). The aiExecutor concurrently seeds/refreshes the
+        // SAME unsynchronized global g_trackerState (trackerStartTrack/RefreshTemplate)
+        // while isAiRunning is held. Gating on the established isAiRunning interlock
+        // serializes all g_trackerState mutation to one thread at a time; when AI is
+        // in flight the immunity update is skipped this frame and re-evaluated next
+        // (self-healing — a present person is continuously re-confirmed).
+        if (!anyMotion && firstMotionTime != 0 && recentYoloForImmunity && !isAiRunning.get()) {
+            for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) {
+                try {
+                    if (NativeMotion.trackerHasActiveTrack(q)) {
+                        // LIVENESS: drive the NCC tracker on this frame BEFORE
+                        // trusting it. trackerUpdate normally runs only while
+                        // recording, so pre-recording a person-track is frozen and
+                        // stays "active" forever after the person leaves — a zombie
+                        // that would keep immunity alive and fire an empty-scene
+                        // recording at the ~2s trigger. Updating here makes the NCC
+                        // score track reality: when the person is gone the match
+                        // score falls and the track deactivates after
+                        // TRACKER_LOST_FRAMES_MAX, so the lock below is only granted
+                        // while the person is actually still there. A genuinely
+                        // present standing person keeps a high NCC score and holds.
+                        byte[] qc = (smallRgbFrame != null)
+                                ? cropFromMosaic(smallRgbFrame, q, THUMBNAIL_WIDTH / 2, THUMBNAIL_HEIGHT / 2)
+                                : null;
+                        if (qc != null) {
+                            NativeMotion.trackerUpdate(qc, THUMBNAIL_WIDTH / 2, THUMBNAIL_HEIGHT / 2, q, now);
+                        }
+                        if (!NativeMotion.trackerHasActiveTrack(q)) continue; // aged out → person gone
+                        float[] trackBox = NativeMotion.trackerGetTrackBox(q);
+                        if (trackBox != null && (int) trackBox[5] == 0   // person only
+                                && trackerInZone(q)) {
+                            anyMotion = true;
+                            if (maxThreat < MotionPipelineV2.THREAT_MEDIUM) {
+                                maxThreat = MotionPipelineV2.THREAT_MEDIUM;
+                            }
+                            // Re-dispatch YOLO on this quadrant (cooldown-gated) so
+                            // lastPersonConfirmationTimeMs keeps refreshing while the
+                            // NCC lock genuinely holds. Without this, a dead-still
+                            // person gets NO re-confirmation pre-recording (early-AI
+                            // is motion-gated and the NCC heartbeat is recording-
+                            // gated), so the recency window goes stale at ~5s and a
+                            // loiter bar configured >5s (with the approach fast-path
+                            // off/>5s) would never trigger. A departed person's NCC
+                            // track ages out above (the `continue`), so YOLO then
+                            // finds nothing and immunity still lapses — preserving
+                            // the empty-scene-storm defense.
+                            if (useObjectDetection && !isAiRunning.get()
+                                    && aiQuadrantQueueIsEmpty()
+                                    && (System.currentTimeMillis() - lastAiTimeMs) >= AI_COOLDOWN_MS) {
+                                aiQuadrantQueueAdd(q);
+                                runAiOnQuadrant(smallRgbFrame, aiQuadrantQueuePoll());
+                            }
+                            if (frameCount % 50 == 0) {
+                                logger.info("Standing-person immunity: Q" + q +
+                                        " [" + MotionPipelineV2.QUADRANT_NAMES[q] +
+                                        "] motion decayed but tracker holds in-zone person lock");
+                            }
+                            break;
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
         // Per-tick proximity state update — runs ONCE per quadrant per
         // processFrameV2 iteration, BEFORE any log site reads
         // proximityForQuadrant. Without this, multiple downstream log sites
@@ -1651,6 +1945,59 @@ public class SurveillanceEngineGpu {
                 }
             }
 
+            // TRACK-ANCHORED CONFIRMATION. A live in-zone person tracker is, by
+            // construction, the product of a PRIOR real YOLO person detection
+            // (the only tracker seed is trackerStartTrack from a YOLO 'best' —
+            // see ~:3150). So an in-zone person track held right now is itself
+            // standing confirmation that a real person is at the car, even if
+            // lastAiConfirmationTimeMs predates this sequence's firstMotionTime.
+            // This matters across a ZONE-BOUNDARY JITTER: a person pacing in and
+            // out of the configured zone trips the gap-branch firstMotionTime
+            // reset, so on re-entry the YOLO timestamp looks "stale" and the
+            // approach fast-path / AI gate would otherwise demote to the full
+            // loiter bar — delaying a re-entering, already-identified person.
+            // Anchoring on the live track keeps the fast path. FP-safe: requires
+            // a YOLO-seeded person track (classId==0) in-zone, which shadows /
+            // leaves / flags can never produce. Storm-safe: only consulted on the
+            // inline path, which the revive-only guard (~:1503) keeps tied to a
+            // live sequence, and tracks are dropped on every stop (~:5603).
+            // RECENCY GATE: only trust a held track as confirmation if a real
+            // YOLO confirmation landed within TRACK_ANCHOR_RECENCY_MS. The track
+            // "active" flag alone has no pre-recording liveness (trackerUpdate is
+            // recording-gated), so a track seeded for a person who LEFT stays
+            // frozen-active in-zone forever; reading it bare would certify a later
+            // unrelated shadow burst as confirmed. Tying it to a recent YOLO hit
+            // means a genuine zone-jitter re-entry (person confirmed seconds ago)
+            // keeps the fast path, while a stale zombie (last confirmation long
+            // past) is rejected and the normal AI-suppression gate applies.
+            // PERSON-specific: the held track is a person (classId==0 check
+            // below), so only a recent PERSON YOLO hit may certify it fresh — a
+            // passing car/bike must not keep a stale zombie person track alive.
+            boolean recentYoloHit = lastPersonConfirmationTimeMs > 0
+                    && (now - lastPersonConfirmationTimeMs) <= TRACK_ANCHOR_RECENCY_MS;
+            boolean inZonePersonTrackerHeld = false;
+            if (recentYoloHit) {
+                for (int tq = 0; tq < MotionPipelineV2.NUM_QUADRANTS; tq++) {
+                    try {
+                        if (NativeMotion.trackerHasActiveTrack(tq)) {
+                            float[] tb = NativeMotion.trackerGetTrackBox(tq);
+                            if (tb != null && tb.length >= 7 && (int) tb[5] == 0
+                                    && trackerInZone(tq)) {
+                                inZonePersonTrackerHeld = true;
+                                break;
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+            // A live, recently-YOLO-backed in-zone person track counts as
+            // confirmation for THIS sequence's gating decisions (fast-path bar +
+            // AI-confirm gate). The first disjunct is the normal within-sequence
+            // confirmation; the second bridges a zone-boundary firstMotionTime
+            // reset for an already-identified, still-tracked person.
+            boolean sequenceConfirmed =
+                    (lastAiConfirmationTimeMs >= firstMotionTime) || inZonePersonTrackerHeld;
+
             // Determine required sustained motion based on threat level:
             // - THREAT_HIGH, TRUSTED (coherent/tracked loiter): base delay 500ms.
             // - THREAT_HIGH, UNTRUSTED (flag/shadow): treated like MEDIUM —
@@ -1673,7 +2020,7 @@ public class SurveillanceEngineGpu {
                 // on enable()/sequence handling).
                 if (approachTriggerMs > 0
                         && firstMotionTime > 0
-                        && lastAiConfirmationTimeMs >= firstMotionTime
+                        && sequenceConfirmed
                         && approachTriggerMs < requiredDuration) {
                     requiredDuration = approachTriggerMs;
                 }
@@ -1759,7 +2106,11 @@ public class SurveillanceEngineGpu {
                     // must be trusted.
                     boolean deterrentActive = deterrentFiredTime > 0
                             && (now - deterrentFiredTime) < DETERRENT_SUPPRESSION_MS;
-                    boolean aiRecentlyConfirmed = lastAiConfirmationTimeMs >= firstMotionTime;  // Confirmed during THIS sequence
+                    // Confirmed during THIS sequence — either a YOLO hit since
+                    // firstMotionTime, OR a live in-zone person track (which is
+                    // itself the product of a prior real YOLO person detection;
+                    // see sequenceConfirmed / track-anchored confirmation above).
+                    boolean aiRecentlyConfirmed = sequenceConfirmed;
                     // FIX: aiAvailable must also reflect the user-side gate
                     // (classFilter empty OR aiEnabled false). Previously this
                     // only tracked the daemon-classpath state, so a user who
@@ -1965,6 +2316,49 @@ public class SurveillanceEngineGpu {
                         // ping + push banner would fire for an event that never
                         // started and whose final-stage replacement never comes,
                         // leaving a dangling never-resolved notification.
+                        // Latch whether THIS event fired on the motion-only MEDIUM
+                        // path (the shadow-FP signature) vs a tracker/trusted-HIGH
+                        // path. Only a motion-only MEDIUM event is eligible for the
+                        // empty-bright-motion discard. Set AFTER startRecording
+                        // (which resets the latch for the fresh event), and only
+                        // when recording actually started.
+                        if (recording) {
+                            eventTriggerWasMotionOnly =
+                                    "motion".equals(triggerSource) && maxThreat <= MotionPipelineV2.THREAT_MEDIUM;
+                            // Latch the side-camera lateral proximity-mass override
+                            // (native motion_pipeline_v2.cpp:768: componentSize/70 >
+                            // 0.15 on a left/right cam). On the fisheye side cams a
+                            // large lateral object that YOLO returns 0 detections for
+                            // is barrel distortion (project_fisheye_dewarp), NOT an
+                            // empty scene — so a possible real close lateral actor.
+                            // This makes shouldDiscardEvent KEEP such a clip even
+                            // when no Actor ever latched, closing the bright-fisheye
+                            // false-negative. Front/rear cams and sub-15% components
+                            // (the shadow/leaf signature) are unaffected.
+                            if (bestResult != null && (bestQ == 1 || bestQ == 3)
+                                    && (bestResult.componentSize
+                                        / (float) MotionPipelineV2.TOTAL_BLOCKS) > 0.15f) {
+                                eventTriggerWasLateralMass = true;
+                            }
+                            // Latch whether the recording fired WITHOUT any
+                            // in-sequence YOLO confirmation (the AI-timeout
+                            // fallback that exists to trust motion when "the
+                            // object is too small/dark/distorted for YOLO but
+                            // real"). A genuinely-empty shadow FP instead opens
+                            // its AI gate via the PARKED CAR's own YOLO boxes, so
+                            // it has sequenceConfirmed==true and stays discardable;
+                            // a real person/vehicle YOLO never classified leaves
+                            // this true and must never be auto-deleted.
+                            eventTriggerWasAiTimeout = !sequenceConfirmed;
+                        }
+
+                        // Only fire the start-stage notifications when a recording
+                        // is actually active. startRecording() can refuse (encoder
+                        // savedFormat barrier on cold boot) and leave recording=false
+                        // — without this guard a "Recording in progress" Telegram
+                        // ping + push banner would fire for an event that never
+                        // started and whose final-stage replacement never comes,
+                        // leaving a dangling never-resolved notification.
                         if (recording) {
                             try {
                                 String videoFilename = currentEventFile != null ? currentEventFile.getName() : null;
@@ -2151,7 +2545,15 @@ public class SurveillanceEngineGpu {
                     }
                 }
 
-                if (firstMotionTime != 0 && timeSinceLastMotion > gapTolerance) {
+                // !recording: the deferred-trigger block above (same if(!recording)
+                // scope) may have just called startRecording() — which sets
+                // recording=true but does NOT touch firstMotionTime/lastMotionTime,
+                // so this gap-reset would otherwise fire on the SAME frame and its
+                // dropAllTrackerLocks() would strip the brand-new recording's NCC
+                // locks, killing the post-record trackerHolding extension and
+                // truncating a standing person's clip. Skip the reset while
+                // recording; stopRecording() drops the locks at stop instead.
+                if (firstMotionTime != 0 && !recording && timeSinceLastMotion > gapTolerance) {
                     // Motion sequence ended without triggering
                     long motionDuration = lastMotionTime - firstMotionTime;
                     if (motionDuration > 200) {
@@ -2165,10 +2567,26 @@ public class SurveillanceEngineGpu {
                     }
                     firstMotionTime = 0;
                     peakThreatDuringSequence = 0;
+                    // Drop tracker locks when a sequence ends WITHOUT triggering.
+                    // trackerUpdate (NCC age-out + heartbeat teardown) runs ONLY
+                    // while recording, so a YOLO-person track seeded during this
+                    // brief, non-triggering sequence would otherwise stay frozen-
+                    // active in-zone indefinitely. The track-anchored confirmation
+                    // (sequenceConfirmed, ~:1768) would then read that STALE track
+                    // and grant "confirmed" status to a LATER, unrelated sequence
+                    // started by a shadow/leaf — letting a lighting artifact record
+                    // as if YOLO had seen a person. Dropping here bounds a track's
+                    // stale lifetime to a single motion sequence. Safe for the
+                    // real cases: the standing-person fix TRIGGERS (never reaches
+                    // this reset), and a legitimate in-zone person triggers a
+                    // recording fast (where trackerUpdate then manages teardown);
+                    // only a track that failed to trigger — which shouldn't lend
+                    // confirmation to anything later — is cleared.
+                    dropAllTrackerLocks();
                 }
             }
         }
-        
+
         // Post-record check: stop recording when no motion for postRecordMs.
         // SOTA: Also check ANY quadrant for activity (not just MEDIUM+ threat).
         // A person standing still near the car produces minimal block changes but
@@ -2675,18 +3093,19 @@ public class SurveillanceEngineGpu {
                     return;
                 }
 
-                boolean detectPerson = true, detectCar = true, detectBike = true;
+                boolean detectPerson = true, detectCar = true, detectBike = true, detectAnimal = false;
                 if (classFilter != null && classFilter.length > 0) {
-                    detectPerson = false; detectCar = false; detectBike = false;
+                    detectPerson = false; detectCar = false; detectBike = false; detectAnimal = false;
                     for (int cls : classFilter) {
                         if (cls == 0) detectPerson = true;
                         if (cls == 2 || cls == 5 || cls == 7) detectCar = true;
                         if (cls == 1 || cls == 3) detectBike = true;
+                        if (cls >= 14 && cls <= 23) detectAnimal = true;  // COCO animals
                     }
                 }
-                
+
                 java.util.List<com.overdrive.app.ai.Detection> detections = detectorSnap.detect(
-                        cropData, qW, qH, aiConfidence, detectPerson, detectCar, false, detectBike, minObjectSize);
+                        cropData, qW, qH, aiConfidence, detectPerson, detectCar, detectAnimal, detectBike, minObjectSize);
                 
                 // Track how many motion-filtered detections we found (accessible outside the block
                 // for the teardown gate that kills zombie tracks when YOLO returns empty)
@@ -2874,7 +3293,24 @@ public class SurveillanceEngineGpu {
                         // This is used by the deterrent flash guard to allow recording
                         // even during the suppression window if YOLO sees a real threat.
                         lastAiConfirmationTimeMs = System.currentTimeMillis();
-                        
+                        // PERSON-specific timestamp for the track-anchored / immunity
+                        // recency gates (a held in-zone track is a person; only a
+                        // recent PERSON hit may certify it fresh). GENERATION-GATED:
+                        // a lambda whose recording already ended must NOT refresh
+                        // this — otherwise a post-stop run revives a stale person
+                        // timestamp that, with a re-seeded zombie track, would
+                        // certify a later unrelated burst's fast-path (defeating
+                        // dropAllTrackerLocks). The track re-seed below is gated the
+                        // same way, so the two stay consistent.
+                        if (recordingGeneration.get() == generationAtSchedule) {
+                            for (com.overdrive.app.ai.Detection d : motionFiltered) {
+                                if (d.getClassId() == 0) {
+                                    lastPersonConfirmationTimeMs = System.currentTimeMillis();
+                                    break;
+                                }
+                            }
+                        }
+
                         long timeSinceMotion = System.currentTimeMillis() - lastMotionTime;
                         if (timeSinceMotion < 2000) {
                             lastMotionTime = System.currentTimeMillis();
@@ -2970,7 +3406,7 @@ public class SurveillanceEngineGpu {
                             // Telegram stages gate on the worst the event ever
                             // reached, not whatever happens to be in lastActors
                             // at stop time (which TTL-prunes departed actors).
-                            updateEventPeakSeverity(actorSnapshot);
+                            updateEventPeakSeverity(actorSnapshot, generationAtSchedule);
                             // Forward to thumbnail buffer so it can capture the peak-severity frame.
                             // Block C wires this; safe no-op if buffer not yet attached.
                             if (thumbnailBuffer != null && cropData != null) {
@@ -2983,7 +3419,13 @@ public class SurveillanceEngineGpu {
                             // for stopRecording → updateFromEventEnd. Closes
                             // the loop with the Actor tracker's "static" flag.
                             for (Actor a : actorSnapshot) {
-                                if (!a.isStatic) continue;
+                                // Timeline-static superset: promote a parked car
+                                // detected via the never-moved signal into the
+                                // baseline now (so the next event suppresses it)
+                                // without waiting for the consecutive stable frames
+                                // the severity-path isStatic needs under sparse
+                                // cadence.
+                                if (!a.isStaticForTimeline) continue;
                                 if (a.classGroup == Actor.ClassGroup.PERSON
                                         || a.classGroup == Actor.ClassGroup.ANIMAL
                                         || a.classGroup == Actor.ClassGroup.UNKNOWN) continue;
@@ -3017,7 +3459,16 @@ public class SurveillanceEngineGpu {
                         // SOTA: Start/refresh texture tracker on the highest-confidence detection.
                         // YOLO's job is done — the NCC tracker takes over frame-by-frame
                         // tracking. YOLO only wakes up again on heartbeat or NCC score drop.
-                        if (!trackableDetections.isEmpty() && mosaicQuadCrop != null) {
+                        // GENERATION-GATED: if this lambda's recording already ended, do
+                        // NOT (re)seed or refresh a track. The native track has no
+                        // pre-recording age-out (tracker_update is recording-gated), so a
+                        // post-stop re-seed would survive as a zombie that the
+                        // track-anchored / immunity recency gates read to certify a later
+                        // unrelated burst — the exact TOCTOU hole that races
+                        // dropAllTrackerLocks (the LAST statement of stopRecording).
+                        // Dropping a track is always safe; only the (re)seed is gated.
+                        if (!trackableDetections.isEmpty() && mosaicQuadCrop != null
+                                && recordingGeneration.get() == generationAtSchedule) {
                             com.overdrive.app.ai.Detection best = trackableDetections.get(0);
                             for (com.overdrive.app.ai.Detection d : trackableDetections) {
                                 if (d.getConfidence() > best.getConfidence()) best = d;
@@ -3306,9 +3757,10 @@ public class SurveillanceEngineGpu {
         config.setIsMosaic(true);  // We use 2x2 mosaic layout
         
         // Apply object detection filters from saved config.
-        // This rebuilds the classFilter array so YOLO respects detectPerson/detectCar/detectBike.
+        // This rebuilds the classFilter array so YOLO respects detectPerson/detectCar/detectBike/detectAnimal.
         setObjectFilters(config.getMinObjectSize(), config.getAiConfidence(),
-                config.isDetectPerson(), config.isDetectCar(), config.isDetectBike());
+                config.isDetectPerson(), config.isDetectCar(), config.isDetectBike(),
+                config.isDetectAnimal());
         
         // Apply V2 pipeline settings from loaded config.
         // Order matters: environment preset sets all defaults, then sensitivity and
@@ -3937,9 +4389,11 @@ public class SurveillanceEngineGpu {
      * @param detectPerson Enable person detection
      * @param detectCar Enable car detection
      * @param detectBike Enable bike detection
+     * @param detectAnimal Enable animal detection (COCO 14-23)
      */
     public void setObjectFilters(float minSize, float confidence,
-                                 boolean detectPerson, boolean detectCar, boolean detectBike) {
+                                 boolean detectPerson, boolean detectCar, boolean detectBike,
+                                 boolean detectAnimal) {
         this.minObjectSize = minSize;
         this.aiConfidence = confidence;
 
@@ -3954,6 +4408,12 @@ public class SurveillanceEngineGpu {
         if (detectBike) {
             classes.add(1);  // COCO: bicycle
             classes.add(3);  // COCO: motorcycle
+        }
+        if (detectAnimal) {
+            // COCO 14-23: bird, cat, dog, horse, sheep, cow, elephant, bear,
+            // zebra, giraffe. Same range the YoloDetector animal mask uses
+            // and that Actor.classGroupFor() maps to ClassGroup.ANIMAL.
+            for (int c = 14; c <= 23; c++) classes.add(c);
         }
 
         // FIX (Bug B): empty list now means "user disabled all classes" — represented as
@@ -4076,7 +4536,7 @@ public class SurveillanceEngineGpu {
             if (!isActorFresh(a, nowMs)) continue;
             // Keep a static PERSON (loiterer = the threat, gated CRITICAL); skip
             // only non-person statics (parked cars, forced to NOTICE anyway).
-            if (a.isStatic && a.classGroup != Actor.ClassGroup.PERSON) continue;
+            if (a.isStaticForTimeline && a.classGroup != Actor.ClassGroup.PERSON) continue;
             switch (a.classGroup) {
                 case PERSON:  persons++;  break;
                 case VEHICLE: vehicles++; break;
@@ -4120,6 +4580,102 @@ public class SurveillanceEngineGpu {
     }
 
     /**
+     * Actor set for the FINAL (recording-end) notifications and caption. The
+     * live {@code lastActors} snapshot is TTL-pruned (5s), so an actor that was
+     * significant during the event but departed before it ended (a person who
+     * came very-close then walked away) has been erased — leaving a lingering
+     * far car as the caption subject while the HERO thumbnail (captured at the
+     * event-peak frame) correctly shows the close person. That mismatch is the
+     * "caption says Vehicle/FAR but the hero shows a close person" bug.
+     *
+     * <p>This unions the retained {@link #eventPeakActors} (each actor at its
+     * most-significant moment across the whole event — same set that feeds the
+     * JSON/SRT/stats headline) with the live snapshot, de-duped by actorId with
+     * the live copy winning (freshest for an actor still present). The result is
+     * the caption built from the SAME actors the hero was chosen from, so the
+     * two agree. Returns the live snapshot unchanged when no peak actors were
+     * retained (e.g. a motion-only event with no AI classification).
+     */
+    private java.util.List<Actor> finalNotificationActors() {
+        java.util.List<Actor> live = lastActors;
+        if (eventPeakActors.isEmpty()) {
+            return live != null ? live : java.util.Collections.<Actor>emptyList();
+        }
+        // Multi-segment guard (mirror of scheduleSegmentMetadataFlushWithSnapshot):
+        // the final push / Telegram caption + hero describe the FINAL clip only, so
+        // drop a peak-retained actor that was entirely gone before the final
+        // segment's window began — otherwise a multi-segment event names/counts an
+        // actor absent from the final clip. recordingStartTimeMs is not reset
+        // between the final flushSegmentMetadata and the publish calls, so it is
+        // the correct final-segment anchor. No-op for single-segment events (the
+        // departed-close-person's lastSeenWallMs lies within the only segment).
+        final long segmentStartMs = timelineCollector.getRecordingStartTimeMs();
+        java.util.Map<Long, Actor> merged = new java.util.LinkedHashMap<>();
+        for (Actor a : eventPeakActors.values()) {
+            if (segmentStartMs > 0 && a.lastSeenWallMs > 0 && a.lastSeenWallMs < segmentStartMs) {
+                continue;
+            }
+            merged.put(a.actorId, a);
+        }
+        if (live != null) {
+            for (Actor a : live) merged.put(a.actorId, a); // live wins
+        }
+        return coalesceReenteredPersons(new java.util.ArrayList<>(merged.values()));
+    }
+
+    // The depart→re-enter merge is only valid within ONE physical person's
+    // track-TTL window: a track TTL-prunes after ~8s out of YOLO range and the
+    // same person re-entering gets a fresh actorId. A gap LONGER than this means
+    // they were gone long enough to be a genuinely SEPARATE person — must NOT be
+    // collapsed. Mirrors ActorTracker.TRACK_TTL_MS (kept local to avoid exposing
+    // a private constant); a small margin covers scheduling jitter.
+    private static final long REENTER_COALESCE_WINDOW_MS = 8000L;
+
+    /**
+     * Collapse a depart-and-re-enter PERSON double-count. The actorId-keyed union
+     * keeps BOTH a retained eventPeakActors copy (old id, person left) AND the live
+     * re-entered copy (new id, assigned because the track TTL-pruned while they were
+     * out of YOLO range) — one physical person counted twice ("2 people" caption,
+     * +1 personCount). Drop the OLDER person entry ONLY when a same-class PERSON
+     * entry began after it was last seen AND within REENTER_COALESCE_WINDOW_MS (the
+     * plausibly-same-person window) AND sharing a camera quadrant. Those three
+     * guards together prevent collapsing two GENUINELY DISTINCT sequential people
+     * (the dangerous case: dropping a CRITICAL departed person in favour of a later
+     * NOTICE passer-by). Keeps the later (live) copy, which wins the union for
+     * severity/hero. Non-person and temporally-overlapping persons are untouched.
+     */
+    private static java.util.List<Actor> coalesceReenteredPersons(java.util.List<Actor> actors) {
+        if (actors == null || actors.size() < 2) return actors;
+        java.util.List<Actor> out = new java.util.ArrayList<>(actors.size());
+        for (Actor a : actors) {
+            if (a.classGroup != Actor.ClassGroup.PERSON) { out.add(a); continue; }
+            boolean supersededByReentry = false;
+            for (Actor b : actors) {
+                if (b == a || b.classGroup != Actor.ClassGroup.PERSON) continue;
+                if (a.lastSeenWallMs <= 0) continue;
+                long gap = b.firstSeenWallMs - a.lastSeenWallMs;
+                // b began after a left, within the same-person TTL window, in an
+                // overlapping quadrant → b is a's re-entry, not a new person.
+                // SEVERITY-MONOTONE GUARD: never drop the MORE-significant copy. A
+                // true same-person re-entry carries that person's accumulated peak
+                // into the live copy b (so b >= a and still collapses), whereas a
+                // distinct CRITICAL/closer departed person `a` superseded by a later
+                // NOTICE passer-by `b` is PRESERVED — otherwise the headline
+                // severity, personCount, and closest-proximity would silently
+                // downgrade to the lesser later person.
+                if (gap >= 0 && gap <= REENTER_COALESCE_WINDOW_MS
+                        && (a.cameraMask & b.cameraMask) != 0
+                        && !isMoreSignificant(a, b)) {
+                    supersededByReentry = true;
+                    break;
+                }
+            }
+            if (!supersededByReentry) out.add(a);
+        }
+        return out;
+    }
+
+    /**
      * Final Telegram notification at recording-end. Computes the same actor
      * summary as {@link #sendRichMotionNotifications} but routes via
      * {@code notifyMotionFinalized} so the daemon sends a photo (with the hero
@@ -4128,7 +4684,9 @@ public class SurveillanceEngineGpu {
      * can't be sent.
      */
     private void sendFinalTelegramNotification(String videoFilename, String heroPhotoPath) {
-        java.util.List<Actor> snap = lastActors;
+        // Event-peak union (not the TTL-pruned lastActors) so the caption names
+        // the same actor the hero shows — see finalNotificationActors().
+        java.util.List<Actor> snap = finalNotificationActors();
         Actor.Severity peakSev = com.overdrive.app.notifications.NotificationGate.maxSeverity(snap);
         int persons = 0, vehicles = 0, bikes = 0, animals = 0;
         Actor.Proximity closest = null;
@@ -4136,7 +4694,13 @@ public class SurveillanceEngineGpu {
         for (Actor a : snap) {
             // Keep a static PERSON so the body matches the CRITICAL the gate
             // already sends for a loiterer; skip only non-person statics.
-            if (a.isStatic && a.classGroup != Actor.ClassGroup.PERSON) continue;
+            if (a.isStaticForTimeline && a.classGroup != Actor.ClassGroup.PERSON) continue;
+            // Skip an UNCONFIRMED (1-2 frame YOLO flicker) person so the caption
+            // count matches the event-card headline (EventTimelineCollector also
+            // excludes !confirmed persons) and the eventPeakActors retention path
+            // (which only retains confirmed persons). Without this, a flicker
+            // person could caption "1 person" on a clip whose card shows 0.
+            if (a.classGroup == Actor.ClassGroup.PERSON && !a.confirmed) continue;
             switch (a.classGroup) {
                 case PERSON:  persons++;  break;
                 case VEHICLE: vehicles++; break;
@@ -4176,7 +4740,16 @@ public class SurveillanceEngineGpu {
         // baseline; the latch only ever ADDS a reason to send.
         boolean peakOk = eventPeakSeverity != null
                 && com.overdrive.app.notifications.NotificationGate.shouldTelegram(eventPeakSeverity, config);
-        if (!snapOk && !peakOk) {
+        // LIVE disjunct (mirrors publishMotionFinal). `snap` is the event-peak
+        // UNION, so peakSev=maxSeverity(snap) reflects the MAX — which, with the
+        // INDEPENDENT (non-ordinal) tier toggles, can MASK a still-present lower
+        // tier in an inverted config (e.g. Notices ON, Alerts OFF: a retained
+        // departed ALERT person makes peakSev=ALERT → snapOk=false, suppressing a
+        // live NOTICE actor HEAD would have sent). Restore the live snapshot's own
+        // reason-to-send so nothing the old instantaneous gate sent is suppressed.
+        boolean liveOk = com.overdrive.app.notifications.NotificationGate.shouldTelegram(
+                com.overdrive.app.notifications.NotificationGate.maxSeverity(lastActors), config);
+        if (!liveOk && !snapOk && !peakOk) {
             logger.debug("Telegram final-stage suppressed by per-tier toggle (eventPeak="
                     + eventPeakSeverity + ", snapshot=" + peakSev + ")");
             return;
@@ -4447,12 +5020,47 @@ public class SurveillanceEngineGpu {
         try {
             mmr = new android.media.MediaMetadataRetriever();
             mmr.setDataSource(mp4File.getAbsolutePath());
-            // Sample at ~1s in (or 0 if the clip is shorter) to skip the
-            // black frame the encoder sometimes leads with.
+            // Seek to the MOTION moment, not the pre-roll. The clip is
+            // [pre-record | motion | post-record]; the old hardcoded ~1s landed
+            // inside the pre-record quiet window (preRecordMs default 5s, often
+            // flushed to 14s+ from the nearest keyframe) — i.e. an empty frame
+            // BEFORE anything happened, which is why fallback heroes often showed
+            // a still scene. Aim at preRecordMs + ~1s (just past the trigger), and
+            // clamp into [1s, max(1s, duration - postRecordMs)] so we never land in
+            // the trailing post-record tail or past the end. preRecordMs/postRecordMs
+            // are fields available to BOTH the live and orphan-sweep callers; the
+            // clip's own duration bounds it when the buffer flushed more pre-roll
+            // than configured. Falls back to mid-clip if the metadata is unusable.
             String dur = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
             long durMs = 0;
             try { if (dur != null) durMs = Long.parseLong(dur); } catch (Exception ignored) {}
-            long sampleUs = durMs >= 1500 ? 1_000_000L : Math.max(0L, (durMs * 500L));
+            long sampleUs;
+            if (durMs >= 1500) {
+                // Anchor on the ACTUAL flushed pre-roll, not the configured
+                // preRecordMs. The encoder's circular buffer may flush more than
+                // the configured pre-record (commonly ~14s), so preRecordMs+1s
+                // still lands inside the empty pre-roll quiet window and the hero
+                // shows a frame before anything happened. getActualPreRecordDurationMs()
+                // is the encoder's real flushed pre-roll (same source startRecording
+                // uses); fall back to preRecordMs for the orphan-sweep path where no
+                // live encoder is available.
+                long anchorMs = preRecordMs;
+                try {
+                    HardwareEventRecorderGpu enc = (recorder != null) ? recorder.getEncoder() : null;
+                    if (enc != null) {
+                        long actual = enc.getActualPreRecordDurationMs();
+                        if (actual > 0) anchorMs = actual;
+                    }
+                } catch (Throwable ignored) {}
+                long target = anchorMs + 1000L;                    // just after motion start
+                long upper  = Math.max(1000L, durMs - postRecordMs); // before the post-record tail
+                if (target > upper) target = Math.min(upper, durMs / 2); // degrade to mid-clip
+                if (target < 1000L) target = 1000L;                // never the leading black frame
+                if (target > durMs - 1) target = Math.max(0L, durMs - 1);
+                sampleUs = target * 1000L;                          // ms → µs
+            } else {
+                sampleUs = Math.max(0L, (durMs * 500L));            // very short clip: ~mid
+            }
             android.graphics.Bitmap frame = mmr.getFrameAtTime(sampleUs,
                     android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             if (frame == null) {
@@ -4601,16 +5209,33 @@ public class SurveillanceEngineGpu {
      */
     private void publishMotionFinal(String videoFilename, String heroJpegName) {
         try {
-            // Snapshot the current Actor view — at this point the recording has
-            // closed so lastActors holds the final state.
-            java.util.List<Actor> snap = lastActors;
+            // Event-peak union (NOT the bare TTL-pruned lastActors) so the push
+            // title/body name the same actor the hero thumbnail shows. A close
+            // person who departed before event-end is pruned from lastActors,
+            // leaving a lingering far car to caption the event — while the hero
+            // (event-peak frame) shows the person. See finalNotificationActors().
+            java.util.List<Actor> snap = finalNotificationActors();
             Actor.Severity peakSev = com.overdrive.app.notifications.NotificationGate.maxSeverity(snap);
             // Per-tier gate (config-level): if the user has unchecked the push
             // toggle for this tier in surveillance.html, suppress the publish
             // entirely. Per-device subcategory muting still happens downstream
             // in PushSink for users who want to silence individual devices.
-            if (!com.overdrive.app.notifications.NotificationGate.shouldPush(peakSev, config)) {
-                logger.debug("publishMotionFinal suppressed by per-tier toggle (sev=" + peakSev + ")");
+            //
+            // snap is now the event-peak union, so peakSev reflects the event
+            // peak (which the title/hero use). Mirror sendFinalTelegramNotification's
+            // OR-of-both gate so we never SUPPRESS something the old instantaneous
+            // gate would have sent: the per-tier toggles are INDEPENDENT booleans,
+            // not an ordinal threshold, so a raised peakSev could otherwise flip
+            // SEND→SUPPRESS in a pathological inverted config (e.g. NOTICE-push on,
+            // ALERT-push off). Send if EITHER the live snapshot OR the event peak
+            // passes its own toggle.
+            Actor.Severity liveSev = com.overdrive.app.notifications.NotificationGate
+                    .maxSeverity(lastActors);
+            boolean liveOk = com.overdrive.app.notifications.NotificationGate.shouldPush(liveSev, config);
+            boolean peakOk = com.overdrive.app.notifications.NotificationGate.shouldPush(peakSev, config);
+            if (!liveOk && !peakOk) {
+                logger.debug("publishMotionFinal suppressed by per-tier toggle (live=" + liveSev
+                        + ", peak=" + peakSev + ")");
                 return;
             }
 
@@ -4629,7 +5254,11 @@ public class SurveillanceEngineGpu {
             for (Actor a : snap) {
                 // Keep a static PERSON (loiterer = threat, gated CRITICAL); skip
                 // only non-person statics (parked cars → NOTICE anyway).
-                if (a.isStatic && a.classGroup != Actor.ClassGroup.PERSON) continue;
+                if (a.isStaticForTimeline && a.classGroup != Actor.ClassGroup.PERSON) continue;
+                // Skip an UNCONFIRMED (1-2 frame flicker) person so the push count
+                // matches the event-card headline and the Telegram caption (both
+                // exclude !confirmed persons).
+                if (a.classGroup == Actor.ClassGroup.PERSON && !a.confirmed) continue;
                 switch (a.classGroup) {
                     case PERSON:  persons++;  break;
                     case VEHICLE: vehicles++; break;
@@ -5158,9 +5787,31 @@ public class SurveillanceEngineGpu {
             return;
         }
         recording = true;
+        // GENERATION FENCE: bump BEFORE the clears below so any YOLO lambda
+        // scheduled during the inter-event gap (which carries the prior, post-stop
+        // generation) sees gen != generationAtSchedule at its guard and SKIPS its
+        // updateEventPeakSeverity/lastActors writes. Without this, an in-flight
+        // inter-event lambda could complete AFTER eventPeakActors.clear() and
+        // inject a stale actor into this fresh event's summary (spurious +1
+        // personCount / wrong caption). stopRecording bumps gen too; bumping here
+        // closes the start side. recordingGeneration is only read by the lambda
+        // guard, so an extra bump is safe.
+        recordingGeneration.incrementAndGet();
         // Fresh event → reset the latched peak severity. Each lastActors write
         // during this recording advances it; both Telegram stages read it.
         eventPeakSeverity = null;
+        // Fresh event → clear the retained event-peak actors (see field comment).
+        eventPeakActors.clear();
+        // Fresh event → reset the empty-bright-motion discard latches.
+        eventTriggerWasMotionOnly = false;
+        eventEverApproaching = false;
+        eventEverSawPerson = false;
+        eventEverSawMovingObject = false;
+        eventTriggerWasLateralMass = false;
+        eventTriggerWasAiTimeout = false;
+        eventMaxLuma = 0f;
+        eventMinLuma = Float.MAX_VALUE;
+        eventSegmentFiles.clear();
 
         // OEM Dashcam parallel event recording. When the user has opted into
         // surveillance-driven OEM clips (oemDashcam.surveillance.enabled),
@@ -5277,6 +5928,13 @@ public class SurveillanceEngineGpu {
                     // must not drain again — pass the snap directly via
                     // the segment-aware overload.
                     if (closedSegment != null) {
+                        // Remember the finalized earlier segment so a whole-event
+                        // discard (shouldDiscardEvent → discardCurrentEvent) deletes
+                        // it too. Without this, discard removes only the FINAL
+                        // segment and N-1 earlier segments survive as orphan
+                        // recordings with full metadata. Reset per event in
+                        // startRecording.
+                        eventSegmentFiles.add(closedSegment);
                         scheduleSegmentMetadataFlushWithSnapshot(
                                 closedSegment, closedSegmentActors,
                                 closedSegmentStartMs,
@@ -5313,6 +5971,223 @@ public class SurveillanceEngineGpu {
         logger.info("Event recording triggered successfully");
     }
     
+    /**
+     * Empty-bright-motion discard predicate (the shadow-over-parked-car FP).
+     * Returns true ONLY when ALL six clauses hold — a strict conjunction with
+     * fail-OPEN semantics (any uncertainty → keep the clip). Gated behind the
+     * default-OFF config flag {@code surveillance.discardEmptyBrightMotionEvents},
+     * so with the flag off this is always false → byte-identical behaviour.
+     *
+     * <p>The clauses jointly discriminate the FP from the documented real-threat
+     * cases that ALSO end with 0 retained actors. KEEP overrides (any one keeps
+     * the clip), checked before the discard conjunction:
+     * <ul>
+     *   <li>AI-racing: never decide while a YOLO inference is in flight/queued
+     *       (its actor latches could still be gen-rejected at stop).</li>
+     *   <li>Any YOLO-seen PERSON (even unconfirmed/NOTICE/static) → keep.</li>
+     *   <li>Any YOLO-seen MOVING (!isStaticForTimeline) vehicle/bike → keep
+     *       (a parked car is NOT moving, so it stays discardable).</li>
+     *   <li>A side-cam lateral proximity-mass trigger (fisheye YOLO may 0-detect
+     *       a real close lateral actor) → keep.</li>
+     * </ul>
+     * Then the discard conjunction (ALL must hold to delete):
+     * <ul>
+     *   <li>1 motion-only MEDIUM trigger; 4 never approached.</li>
+     *   <li>5 bright everywhere (≥110, below the BYD ISP ~122 day clamp, above the
+     *       NIGHT real-person brightest-quadrant ~96) rejects the NIGHT miss.</li>
+     *   <li>6 no dark quadrant (≥70) rejects the CLOSE-ZONE miss (luma~46-61).</li>
+     *   <li>2/3 no non-static retained actor and no confirmed loitering PERSON.</li>
+     * </ul>
+     * Person/object/lateral evidence can only PROTECT a clip here, never delete one.
+     */
+    private boolean shouldDiscardEvent() {
+        // Flag default OFF → never discard (byte-identical).
+        boolean enabled;
+        try {
+            enabled = com.overdrive.app.config.UnifiedConfigManager.getSurveillance()
+                    .optBoolean("discardEmptyBrightMotionEvents", false);
+        } catch (Throwable t) {
+            return false;
+        }
+        if (!enabled) return false;
+
+        // HARD KEEP (no detection available): a discard is only safe when YOLO
+        // could actually have produced actor evidence. When detection is
+        // unavailable — daemon without Context/AssetManager, model load failure,
+        // OR the user turned off every object class (aiEnabled false / empty
+        // classFilter) — no Actor is ever created, so all the actor-evidence KEEP
+        // latches are structurally impossible and the predicate degenerates to a
+        // luma-only test that cannot tell a real person/vehicle from a shadow.
+        // Refuse to discard in that mode (keep every clip, exactly as before
+        // detection was disabled). Mirrors the aiAvailable definition (~:2123).
+        if (!(useObjectDetection && yoloDetector != null && aiEnabled
+                && (classFilter == null || classFilter.length > 0))) {
+            return false;
+        }
+
+        // HARD KEEP (AI race): never decide to discard while a YOLO inference is
+        // in flight or queued. Its updateEventPeakSeverity() write — the only
+        // setter of eventEverSawPerson / eventEverSawMovingObject /
+        // eventEverApproaching / eventPeakActors — is gen-rejected by the
+        // stop-time recordingGeneration bump (:6088) if it lands after stop, so a
+        // person/approach detection on the final lambda would never latch and a
+        // real-actor clip could be deleted. Strictly more conservative (only ever
+        // turns a discard into a KEEP); no effect when the flag is off.
+        if (isAiRunning.get() || !aiQuadrantQueueIsEmpty()) return false;
+
+        // Clause 1: motion-only MEDIUM trigger (the FP path).
+        if (!eventTriggerWasMotionOnly) return false;
+        // Hard person KEEP: a PERSON was YOLO-classified at any point — even
+        // unconfirmed (1-2 frame far/mid lateral crosser), even NOTICE, even
+        // static. The eventPeakActors retain gate (:578) only stores a
+        // CONFIRMED person, so clause 3 below alone would let a real but
+        // unconfirmed daytime pedestrian fall through all six clauses and be
+        // deleted. This latch closes that false-negative; the shadow/leaf FP
+        // (zero person detections) is unaffected and still discardable.
+        if (eventEverSawPerson) return false;
+        // Hard moving-object KEEP: a YOLO-classified MOVING (!isStaticForTimeline)
+        // vehicle/bike — a close vehicle paralleling the car stays at NOTICE and
+        // the retain gate (:578) drops it, yet it is a real moving object. A
+        // PARKED car is excluded (eventEverSawMovingObject gated on
+        // !isStaticForTimeline) so the shadow-over-parked-car FP stays discardable.
+        if (eventEverSawMovingObject) return false;
+        // Hard lateral-mass KEEP: a side-cam proximity-mass trigger (cpp:768) is a
+        // possible real close lateral actor that fisheye barrel distortion can
+        // make YOLO miss entirely (project_fisheye_dewarp) — keep it rather than
+        // risk deleting a real-person/vehicle clip in a bright lot.
+        if (eventTriggerWasLateralMass) return false;
+        // Hard AI-timeout KEEP: the recording fired purely on the AI-timeout
+        // fallback with NO in-sequence YOLO confirmation — the path that exists
+        // precisely to trust motion when an object is too small/dark/distorted
+        // for YOLO but real. Such a clip could contain a YOLO-missed real actor
+        // (documented bright-daytime / fisheye whole-event 0-detection), so it
+        // must never be auto-deleted. The shadow-over-parked-car FP is unaffected:
+        // it gets its AI gate opened by the parked car's own YOLO boxes
+        // (sequenceConfirmed==true at trigger → this latch false → still discardable).
+        if (eventTriggerWasAiTimeout) return false;
+        // Clause 4: never approached.
+        if (eventEverApproaching) return false;
+        // Clause 5: bright everywhere — rejects the night low-light real-person miss.
+        if (eventMaxLuma < DISCARD_BRIGHT_LUMA_THRESHOLD) return false;
+        // Clause 6: no dark quadrant — rejects the close-zone real-person miss.
+        if (eventMinLuma == Float.MAX_VALUE || eventMinLuma < DISCARD_DARK_FLOOR) return false;
+        // Clauses 2 & 3: no non-static actor of any class, and no confirmed person
+        // (a still loiterer is a confirmed PERSON → KEEP-override).
+        for (Actor a : eventPeakActors.values()) {
+            if (!a.isStaticForTimeline) return false;                          // a real moving actor existed → keep
+            if (a.classGroup == Actor.ClassGroup.PERSON && a.confirmed) return false;  // confirmed loiterer → keep
+        }
+        // All six held → this is the empty-bright-motion FP.
+        logger.warn(String.format(
+                "Discarding empty bright motion event (shadow-FP): motionOnly=%b approaching=%b "
+                + "maxLuma=%.0f minLuma=%.0f peakActors=%d peakSev=%s",
+                eventTriggerWasMotionOnly, eventEverApproaching, eventMaxLuma,
+                (eventMinLuma == Float.MAX_VALUE ? -1f : eventMinLuma),
+                eventPeakActors.size(), eventPeakSeverity));
+        return true;
+    }
+
+    /**
+     * Delete a just-finalized event that {@link #shouldDiscardEvent()} flagged as
+     * an empty-bright-motion false positive: the mp4 + all sidecars (.json/.srt/
+     * .jpg + per-actor thumbs) + the H2 index row. No notification is sent (the
+     * caller skips the publish/Telegram block). Called from stopRecording BEFORE
+     * flushSegmentMetadata, so the hero/JSON/SRT are usually never even written.
+     */
+    private void discardCurrentEvent() {
+        File f = currentEventFile;
+        if (f == null) return;
+        String name = f.getName();
+        // Drain any in-flight per-segment metadata writes FIRST. Earlier
+        // segments were handed to segmentMetadataExecutor by the rotation
+        // listener; a writer still in flight would otherwise re-create a
+        // hero/JPEG/JSON sidecar AFTER we delete it, leaving an orphan. Bounded
+        // (2s) — same budget the close path uses; on timeout we proceed anyway
+        // (deleteEventSidecars is idempotent and a stray sidecar is cosmetic).
+        try { drainSegmentMetadata(2_000); } catch (Throwable ignored) {}
+        // Also drain the timeline writer (JSON + SRT live on a separate
+        // single-thread executor, NOT covered by drainSegmentMetadata which only
+        // tracks the JPEG/hero writers). Without this, a queued earlier-segment
+        // .json/.srt could be written just AFTER the delete loop below runs,
+        // leaving an orphan sidecar for a discarded event.
+        try {
+            if (timelineCollector != null) timelineCollector.awaitWrites(2_000);
+        } catch (Throwable ignored) {}
+        // Whole-event discard: delete EVERY finalized segment of this event, not
+        // just the final one. The decision (shouldDiscardEvent) is whole-event;
+        // earlier segments were collected by the rotation listener into
+        // eventSegmentFiles. Deletes strictly more files only when discard
+        // already fired for the whole event, so it cannot worsen any
+        // false-negative. The final segment (currentEventFile) is deleted below.
+        for (File seg : eventSegmentFiles) {
+            if (seg == null || seg.equals(f)) continue;       // skip the final segment (handled below)
+            try {
+                if (seg.exists()) seg.delete();
+            } catch (Throwable ignored) {}
+            try {
+                com.overdrive.app.server.RecordingsApiHandler.deleteEventSidecars(seg, seg.getName());
+            } catch (Throwable t) {
+                logger.debug("discardCurrentEvent earlier-segment cleanup failed: " + t.getMessage());
+            }
+        }
+        eventSegmentFiles.clear();
+        try {
+            if (f.exists()) f.delete();                       // the mp4 (final segment)
+        } catch (Throwable ignored) {}
+        try {
+            // Sidecars (.json/.jpg/per-actor thumbs) + H2 row + cache invalidate,
+            // and .srt (the public wrapper adds .srt parity).
+            com.overdrive.app.server.RecordingsApiHandler.deleteEventSidecars(f, name);
+        } catch (Throwable t) {
+            logger.debug("discardCurrentEvent sidecar cleanup failed: " + t.getMessage());
+        }
+        // Resolve the dangling start-stage push banner. If pushNotices is on, a
+        // "Recording in progress" banner fired at trigger (publishMotionNotification,
+        // same tag) and its normal replacement (publishMotionFinal) is now skipped
+        // because we discarded — leaving a stale banner that taps through to a
+        // deleted clip. Emit a final, auto-closing push on the SAME tag so the
+        // service worker REPLACES the banner rather than leaving it. Gated by the
+        // identical isPushNotices() check, so this is a no-op when start banners
+        // were never sent (default config) — preserving byte-identical behaviour.
+        try {
+            if (config != null && config.isPushNotices()) {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("filename", name);
+                d.put("stage", "discarded");
+                d.put("autoClose", true);
+                com.overdrive.app.notifications.NotificationBus.get().publish(
+                        new com.overdrive.app.notifications.NotificationEvent(
+                                "surveillance.motion.notice",
+                                com.overdrive.app.notifications.NotificationEvent.Severity.INFO,
+                                "Motion cleared",
+                                "No event recorded",
+                                notificationTagFor(name),     // SAME tag → replaces the start banner
+                                "/events.html?filter=sentry",
+                                d));
+            }
+        } catch (Throwable t) {
+            logger.debug("discardCurrentEvent banner-clear failed: " + t.getMessage());
+        }
+        // Symmetric Telegram compensation. If telegramSendStartPing is on, a
+        // start-stage "motion detected" text fired at trigger embedding this
+        // filename + a now-dead "/download <file>" command. Telegram has no
+        // edit/delete API, so the only honest compensation is a follow-up plain
+        // text saying the event was cleared. Use sendMessage (NOT notifyMotion,
+        // which would re-emit the filename + /download footer for a deleted
+        // file). Gated by the identical isTelegramSendStartPing() check → strict
+        // no-op when no start ping was ever sent (default config).
+        try {
+            if (config != null && config.isTelegramSendStartPing()) {
+                com.overdrive.app.telegram.TelegramNotifier.sendMessage(
+                        "✅ Motion cleared — no event recorded (filtered as a non-actor false alert).",
+                        "MOTION");
+            }
+        } catch (Throwable t) {
+            logger.debug("discardCurrentEvent telegram-clear failed: " + t.getMessage());
+        }
+        logger.info("Discarded empty bright motion event: " + name);
+    }
+
     /**
      * Stops recording an event with post-record support.
      */
@@ -5385,7 +6260,27 @@ public class SurveillanceEngineGpu {
         // that was current at recorder-stop time.
         recordingGeneration.incrementAndGet();
 
-        if (currentEventFile != null && currentEventFile.exists()) {
+        if (currentEventFile != null && currentEventFile.exists() && shouldDiscardEvent()) {
+            // Empty-bright-motion false positive (shadow over a parked car, etc.):
+            // delete the clip + sidecars + H2 row and emit NO notification. Runs
+            // BEFORE flushSegmentMetadata so the hero/JSON/SRT are usually never
+            // even written. Flag-gated (default OFF) — see shouldDiscardEvent().
+            //
+            // Claim the same per-event dedup slot the KEEP branch uses (below):
+            // the double-stop race (disable() on the control thread vs the engine
+            // post-record stop, documented at the KEEP-branch dedup) can re-enter
+            // this branch for one event during discardCurrentEvent's ~4s drain
+            // window, double-firing the un-deduped "Motion cleared" Telegram
+            // (TelegramNotifier.sendMessage has no replace). Claim by filename so
+            // only the first entry compensates; the deletes are idempotent anyway.
+            String discardName = currentEventFile.getName();
+            if (!discardName.equals(lastFinalNotifiedEvent.getAndSet(discardName))) {
+                discardCurrentEvent();
+            } else {
+                logger.debug("Discard compensation already emitted for " + discardName
+                        + "; skipping duplicate");
+            }
+        } else if (currentEventFile != null && currentEventFile.exists()) {
             logger.info( String.format("Saved: %s (%d KB)",
                     currentEventFile.getName(), currentEventFile.length() / 1024));
 
@@ -5465,7 +6360,36 @@ public class SurveillanceEngineGpu {
         actorTracker.reset();
         lastActors = java.util.Collections.emptyList();
         if (thumbnailBuffer != null) thumbnailBuffer.clear();
+        // Drop all native texture-tracker locks on stop. The NCC age-out and
+        // YOLO-heartbeat teardown that would normally retire a track run ONLY
+        // inside the `if (recording)` block, so a track that was still locked at
+        // stop time (a person who stood still until the 3× hard ceiling fired)
+        // would otherwise persist "active" forever — a zombie that the
+        // standing-person-immunity branch (~:1485) could read every frame. The
+        // revive-only guard there already prevents that zombie from re-arming a
+        // sequence, but dropping the locks here removes the zombie at its root:
+        // if a real person is still present, the next genuine motion + YOLO
+        // re-seeds a fresh track cleanly. Cheap (≤4 JNI calls), best-effort.
+        dropAllTrackerLocks();
         logger.info("Recording stopped, motion detection continues");
+    }
+
+    /**
+     * Best-effort drop of every active native texture-tracker lock across all
+     * quadrants. Used on recording stop so a track that outlived its recording
+     * (NCC age-out / heartbeat teardown only run while recording) can't linger
+     * as a zombie that keeps the standing-person-immunity branch alive after the
+     * subject has gone. Safe to call when no tracks are active (no-op per
+     * quadrant); any native failure is swallowed so it can never block a stop.
+     */
+    private void dropAllTrackerLocks() {
+        for (int q = 0; q < MotionPipelineV2.NUM_QUADRANTS; q++) {
+            try {
+                if (NativeMotion.trackerHasActiveTrack(q)) {
+                    NativeMotion.trackerDropTrack(q);
+                }
+            } catch (Throwable ignored) {}
+        }
     }
 
     /**
@@ -5548,6 +6472,25 @@ public class SurveillanceEngineGpu {
             boolean syncHero) {
         if (segmentMp4 == null) return;
 
+        // EVENT-PEAK ACTOR RETENTION: actorsAtRotation is the live (TTL-pruned)
+        // snapshot. Union in any retained event-peak actors (see eventPeakActors
+        // field) that are NOT already present, so an actor that was significant
+        // during the event but departed before it ended (a person who came
+        // very-close then left) still appears in the JSON actors[]/stats/SRT and
+        // isn't replaced by a lingering far car. De-duped by actorId; the live
+        // snapshot's copy wins (it is the freshest for an actor still present).
+        if (!eventPeakActors.isEmpty()) {
+            java.util.Map<Long, Actor> merged = new java.util.LinkedHashMap<>();
+            for (Actor a : eventPeakActors.values()) merged.put(a.actorId, a);
+            if (actorsAtRotation != null) {
+                for (Actor a : actorsAtRotation) merged.put(a.actorId, a); // live wins
+            }
+            // Collapse a depart-and-re-enter PERSON double-count (old retained id +
+            // new live id for one physical person) so JSON actors[]/personCount/SRT
+            // don't over-report — same coalesce the caption path uses.
+            actorsAtRotation = coalesceReenteredPersons(new java.util.ArrayList<>(merged.values()));
+        }
+
         // Renormalize peak times against this segment's window — same logic
         // as the inline path used to do.
         final java.util.List<Actor> segmentActors;
@@ -5556,6 +6499,18 @@ public class SurveillanceEngineGpu {
         } else {
             java.util.List<Actor> renormalized = new java.util.ArrayList<>(actorsAtRotation.size());
             for (Actor a : actorsAtRotation) {
+                // Multi-segment guard: drop a peak-retained actor that was entirely
+                // gone before THIS segment's window began — it belongs only to an
+                // earlier segment and would otherwise be over-counted in every
+                // later segment's actors[]/counts/SRT. lastSeenWallMs is wall-clock;
+                // an actor still present at rotation (the freshest live copy that
+                // wins the union) has lastSeenWallMs >= segmentStartMs and is kept,
+                // as is the single-segment departed-close-person the union exists
+                // for (its lifespan lies within the only segment). No-op for
+                // single-segment events.
+                if (a.lastSeenWallMs > 0 && a.lastSeenWallMs < segmentStartMs) {
+                    continue;
+                }
                 long renormalizedRelMs;
                 if (a.peakSeverityWallMs > 0 && a.peakSeverityWallMs >= segmentStartMs) {
                     renormalizedRelMs = a.peakSeverityWallMs - segmentStartMs;
@@ -5571,7 +6526,7 @@ public class SurveillanceEngineGpu {
                             a.firstSeenRelMs, a.lastSeenRelMs,
                             a.cameraMask,
                             a.peakProximity, a.lastProximity,
-                            a.trend, a.isStatic,
+                            a.trend, a.isStatic, a.isStaticForTimeline, a.confirmed,
                             a.peakSeverity, a.peakSeverityWallMs, renormalizedRelMs,
                             a.peakConfidence,
                             a.peakBboxX, a.peakBboxY, a.peakBboxW, a.peakBboxH,
@@ -5751,7 +6706,9 @@ public class SurveillanceEngineGpu {
             if (segmentActors != null) {
                 long peakRelMs = -1L;
                 for (Actor a : segmentActors) {
-                    if (a == null || a.isStatic) continue;
+                    // Timeline-static superset so a parked car doesn't anchor the
+                    // threat-time GPS capture.
+                    if (a == null || a.isStaticForTimeline) continue;
                     if (a.peakSeverityRelMs >= 0
                             && (peakRelMs < 0 || a.peakSeverityRelMs > peakRelMs)) {
                         peakRelMs = a.peakSeverityRelMs;
@@ -5871,6 +6828,7 @@ public class SurveillanceEngineGpu {
         firstMotionTime = 0;  // Reset sustained motion timer
         deterrentFiredTime = 0;  // Reset deterrent suppression
         lastAiConfirmationTimeMs = 0;  // Reset AI confirmation gate
+        lastPersonConfirmationTimeMs = 0;  // Reset person-specific confirmation gate
         peakThreatDuringSequence = 0;
         cachedHighIsTrusted = false;  // Reset flag/shadow HIGH-trust latch
         cachedIncoherentLoiter = false;  // Reset confirmed-incoherent-loiter latch
@@ -6011,10 +6969,33 @@ public class SurveillanceEngineGpu {
             logger.info("Surveillance disabled (continuous)");
             return;
         }
+        // Clear `active` FIRST so processFrame() early-returns (it gates on
+        // !active at the top) — this stops the AiLaneWorker thread from entering
+        // processFrameV2 (and its native trackerUpdate) while stopRecording()'s
+        // dropAllTrackerLocks() mutates the unsynchronized global tracker state on
+        // this control thread. Ordering stopRecording() after the gate closes the
+        // cross-thread native-tracker write race (harmless POD race, but cleanly
+        // avoided by the reorder).
+        active = false;
+        // Drain any in-flight aiExecutor YOLO lambda BEFORE stopRecording() so it
+        // finishes its native tracker writes (trackerStartTrack/RefreshTemplate)
+        // and clears isAiRunning before stopRecording()'s dropAllTrackerLocks()
+        // mutates the unsynchronized global g_trackerState on this control thread.
+        // active=false above makes the lambda's writes no-ops once it re-checks,
+        // but the drain closes the concurrent-write window deterministically.
+        // Bounded to 50ms — disable() is on the daemon thread; don't block the
+        // caller for a full inference. (Mirrored drain below is now removed.)
+        try {
+            long drainDeadline = System.currentTimeMillis() + 50;
+            while (isAiRunning.get() && System.currentTimeMillis() < drainDeadline) {
+                Thread.sleep(5);
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
         if (recording) {
             stopRecording();
         }
-        active = false;
         inActiveMode = false;
 
         // Tear down any in-progress screen deterrent. cancel() is non-blocking;
@@ -6052,17 +7033,8 @@ public class SurveillanceEngineGpu {
         }
         foveatedRoundRobin = 0;
         lastFoveatedServiceNs = 0L;
-        // Brief drain so any inference already running observes active=false
-        // and skips its writes. Bounded to 50ms — disable() is on the daemon
-        // thread; we don't want to block the caller for a full inference.
-        try {
-            long drainDeadline = System.currentTimeMillis() + 50;
-            while (isAiRunning.get() && System.currentTimeMillis() < drainDeadline) {
-                Thread.sleep(5);
-            }
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt();
-        }
+        // (AI drain moved earlier — before stopRecording() — so it serializes
+        // against dropAllTrackerLocks(); see the drain above.)
 
         // SOTA: Notify StorageManager that surveillance is inactive
         try {

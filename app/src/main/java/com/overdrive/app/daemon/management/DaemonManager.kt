@@ -264,8 +264,8 @@ class DaemonManager private constructor(
     }
     
     private fun startBydEventDaemon(callback: DaemonCallback?) {
-        // BydEventDaemon was previously started via PrivilegedShellSetup (now disabled)
-        // This is handled by BydSystemManager
+        // BydEventDaemon is handled by BydSystemManager (the privileged-shell
+        // startup path is disabled on this build).
         logManager.info(TAG, "BydEventDaemon managed by BydSystemManager")
         updateDaemonState(DaemonType.BYD_EVENT, true)
         callback?.onStarted(DaemonType.BYD_EVENT)

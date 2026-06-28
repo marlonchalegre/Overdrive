@@ -913,6 +913,15 @@ public class BydDataCollector {
         // Extended data consumed by ABRP/MQTT/trips
         collectStatisticExtended(b);   // SOH, driving time, key battery
         collectInstrumentExtended(b);  // cabin temp, trip data, consumption
+        // Charging rest time (time-to-full) HAL fallback. The primary feature-ID
+        // read lives in collectInstrument() above, but many trims/firmware leave
+        // those instrument IDs at 255/not-available while charging — so the
+        // dashboard "Time to full" stayed blank because the chargingDevice
+        // getChargingRestTime() fallback only ran once at init (collectAllFull).
+        // Run it every poll here so a live charge populates rest time. The method
+        // self-guards on chargingRestTimeHours==UNAVAILABLE, so it only fills the
+        // gap and never clobbers a good feature-ID value.
+        collectChargingExtended(b);    // charging rest time (fallback)
 
         // Key proximity probe — runs every poll (ACC on or off) so we keep observing
         // fob state across the parked-charging window and any "approach unlock" event.
@@ -3327,8 +3336,10 @@ public class BydDataCollector {
     }
 
     /**
-     * Extended charging data: charging rest time.
-     * Called from collectAllFull() only (display-only, on-demand).
+     * Extended charging data: charging rest time (time-to-full).
+     * Called from collectAll() (every poll, so a live charge keeps it fresh)
+     * and collectAllFull(). Acts as the fallback when the instrument feature-ID
+     * read in collectInstrument() leaves rest time UNAVAILABLE.
      */
     private void collectChargingExtended(BydVehicleData.Builder b) {
         if (chargingDevice == null) return;

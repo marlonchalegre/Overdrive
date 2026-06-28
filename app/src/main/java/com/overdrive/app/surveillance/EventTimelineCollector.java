@@ -126,6 +126,27 @@ public class EventTimelineCollector {
         return t;
     });
 
+    /**
+     * Block until every queued JSON/SRT write has completed (or the timeout
+     * elapses). writeExecutor is a single-thread FIFO, so a submitted no-op that
+     * completes implies all previously-queued writes finished. Used by the
+     * discard path so a multi-segment empty-bright-motion discard deletes the
+     * sidecars AFTER their async write lands (otherwise a queued earlier-segment
+     * .json/.srt would be written just after deleteEventSidecars ran, orphaning
+     * it). Bounded; returns false on timeout/failure (caller proceeds anyway —
+     * deleteEventSidecars is idempotent).
+     */
+    public boolean awaitWrites(long timeoutMs) {
+        try {
+            java.util.concurrent.Future<?> f = writeExecutor.submit(() -> {});
+            f.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            return true;
+        } catch (Throwable t) {
+            logger.warn("awaitWrites drain timed out/failed: " + t.getMessage());
+            return false;
+        }
+    }
+
     // ========================================================================
     // LIFECYCLE
     // ========================================================================
@@ -451,7 +472,12 @@ public class EventTimelineCollector {
         // Actor-driven entries (preferred — they carry class + proximity)
         if (actors != null) {
             for (Actor a : actors) {
-                if (a.isStatic) continue;
+                // isStaticForTimeline is the superset verdict: it equals isStatic
+                // for PERSON (a loiterer keeps its entry) but additionally covers a
+                // genuinely-parked NON-PERSON that never latched the severity-path
+                // isStatic under sparse YOLO cadence. Gating here keeps parked cars
+                // out of the SRT timeline.
+                if (a.isStaticForTimeline) continue;
                 long offset = a.firstSeenRelMs >= 0 ? a.firstSeenRelMs : 0L;
                 String key = null;
                 switch (a.classGroup) {
@@ -503,12 +529,86 @@ public class EventTimelineCollector {
                                             java.util.List<Actor> actors) {
         if (actors == null || actors.isEmpty()) return false;
         for (Actor a : actors) {
+            // Only actors that ACTUALLY EMITTED an SRT entry count as "covering"
+            // this motion span. A timeline-static actor is skipped at the actor
+            // loop (its own entry is dropped), so it must NOT also suppress the
+            // generic-motion fallback — otherwise a window with a dropped static
+            // actor gets NO subtitle at all. Skipping it here lets the
+            // K_MOTION_STARTED fallback fire for that window.
+            if (a.isStaticForTimeline) continue;
             if (a.firstSeenRelMs < 0 || a.lastSeenRelMs < 0) continue;
             if (spanStart <= a.lastSeenRelMs && spanEnd >= a.firstSeenRelMs) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * True if the [spanStart, spanEnd] window overlaps a timeline-static
+     * NON-PERSON actor (a parked car / static object). Used to drop CAR/BIKE
+     * span markers that are really just a parked vehicle. PERSON actors are
+     * intentionally excluded — a person span must always survive (a loiterer is
+     * the threat, and the span path carries no way to re-confirm a person later).
+     * Falls through to false (keep the span) when no actor context is available,
+     * so the gate is fail-open: a real event is never silently dropped for lack
+     * of actor data.
+     */
+    private static boolean overlapsStaticActor(long spanStart, long spanEnd,
+                                               int spanCamMask,
+                                               java.util.List<Actor> actors) {
+        if (actors == null || actors.isEmpty()) return false;
+        // The span path carries no actor identity — a CAR/BIKE span is one
+        // coalesced inflight chain that may overlap several actors in time. Drop
+        // it ONLY when EVERY overlapping non-person actor is timeline-static: if a
+        // genuinely-moving non-person (a passing car/bike) coexists in the window,
+        // the merged span may belong to IT, so keep the marker (fail-open). This
+        // prevents a parked car — whose lifespan spans ~the whole event — from
+        // silently deleting a real mover's events[] marker / undercounting
+        // stats.car when both are present (the audit edge case). PERSON actors are
+        // ignored (never drive a vehicle-span drop).
+        boolean hasOverlappingStatic = false;
+        for (Actor a : actors) {
+            if (a.classGroup == Actor.ClassGroup.PERSON) continue;
+            // A non-person classified during PRE-ROLL keeps firstSeenRelMs==-1
+            // (it was present before recordingStart). Treat that as 0 so it still
+            // overlaps the segment window — otherwise the old `firstSeenRelMs < 0
+            // continue` skipped a real moving car and let an overlapping parked
+            // car drop its marker. lastSeenRelMs<0 means no recording-relative
+            // window at all → genuinely skip.
+            if (a.lastSeenRelMs < 0) continue;
+            long fRel = a.firstSeenRelMs >= 0 ? a.firstSeenRelMs : 0L;
+            if (!(spanStart <= a.lastSeenRelMs && spanEnd >= fRel)) continue;
+            if (!a.isStaticForTimeline) {
+                // A real moving/approaching non-person coexists — never drop
+                // (fail-open on the mover), regardless of its latched rel times.
+                return false;
+            }
+            // Static (parked) actor. Drop the span ONLY when it is the parked
+            // car's OWN marker: STRICTLY CONTAINED within the actor's lifespan AND
+            // covering most of it (>=90%). A transient passing-car span (the
+            // mover's own actor TTL-pruned, only the parked car left in-window) is
+            // SHORT relative to the long parked window and/or overhangs an edge, so
+            // it fails containment/coverage and is KEPT (fail-open). A drive-in
+            // span (starts before the actor) or a late-departing span (ends after)
+            // also overhangs and is kept.
+            long actorLife = a.lastSeenRelMs - fRel;
+            long spanLen = spanEnd - spanStart;
+            boolean coextensive = actorLife <= 0 || spanLen >= (long) (0.9 * actorLife);
+            // SPATIAL containment too: the span must not light a quadrant the
+            // parked actor never occupied. onAiDetection ingests per-quadrant, and
+            // CAR/BIKE spans coalesce ACROSS quadrants, so a passing car in
+            // quadrant A merged with a parked car in quadrant B yields one span
+            // whose camera mask has A's bit — which the parked car's cameraMask
+            // lacks. That extra quadrant is positive evidence a different (moving)
+            // object is in the span → keep it (fail-open). camSubset==true only
+            // when the span is confined to the parked car's own quadrant(s).
+            boolean camSubset = (spanCamMask & ~a.cameraMask) == 0;
+            if (camSubset && spanStart >= fRel && spanEnd <= a.lastSeenRelMs && coextensive) {
+                hasOverlappingStatic = true;
+            }
+        }
+        return hasOverlappingStatic;
     }
 
     // ========================================================================
@@ -772,6 +872,25 @@ public class EventTimelineCollector {
 
             for (int si = 0; si < count; si++) {
                 int i = sortIdx[si];
+
+                // Drop a CAR/BIKE span marker that lies entirely within the
+                // lifespan of a timeline-static non-person actor (a parked car).
+                // The span path carries no actor identity, so we match by time
+                // window. PERSON spans are never dropped (overlapsStaticActor only
+                // considers non-person static actors), and a real moving car —
+                // which produces a non-static actor — is unaffected. Closes the
+                // "parked car as a car marker in the JSON/events timeline" leak.
+                // maxCount<=1 guard: the span path coalesces all CAR/BIKE
+                // detections into one chain, so a span whose peak simultaneous
+                // count reached >=2 may be hiding a real coexisting mover merged
+                // with the parked car — keep it (fail-open). Only a lone-object
+                // span (count<=1) that is a parked car's own marker is dropped.
+                if ((types[i] == TYPE_CAR || types[i] == TYPE_BIKE)
+                        && (counts[i] & 0xFF) <= 1
+                        && overlapsStaticActor(starts[i], ends[i], (cameras[i] & 0x0F), actors)) {
+                    continue;
+                }
+
                 JSONObject ev = new JSONObject();
                 ev.put("start", starts[i]);
                 ev.put("end", ends[i]);
@@ -830,6 +949,7 @@ public class EventTimelineCollector {
                     ao.put("lastProximity", a.lastProximity.name());
                     ao.put("trend", a.trend.name());
                     ao.put("isStatic", a.isStatic);
+                    ao.put("isStaticForTimeline", a.isStaticForTimeline);
                     ao.put("peakSeverity", a.peakSeverity.name());
                     ao.put("peakSeverityWallMs", a.peakSeverityWallMs);
                     if (a.peakSeverityRelMs >= 0) ao.put("peakSeverityMs", a.peakSeverityRelMs);
@@ -847,8 +967,27 @@ public class EventTimelineCollector {
                     // Counts + peak fields exclude static actors. The classic
                     // failure to prevent: a parked car next to ours dominates
                     // the stats and notification because YOLO sees it at high
-                    // confidence. Static = not a threat = not a count.
-                    if (!a.isStatic) {
+                    // confidence. Static = not a threat = not a count. Use the
+                    // timeline-static superset so a parked car that never latched
+                    // the severity-path isStatic (sparse cadence) is still excluded
+                    // from vehicleCount/peakProximity. PERSON is unaffected
+                    // (isStaticForTimeline == isStatic for persons).
+                    // Headline contribution gate. Always exclude timeline-static
+                    // actors (parked cars). ADDITIONALLY exclude an UNCONFIRMED
+                    // person (historyCount < MIN_ESCALATION_FRAMES, a 1-2 frame
+                    // YOLO flicker): such a person latches peakProximity
+                    // unconditionally (ActorTracker:512) but is never severity-
+                    // escalated, which produced the "👤 very close + Notice" card.
+                    // The caption/retention path (eventPeakActors) already requires
+                    // confirmed for persons, so this aligns the headline stats with
+                    // it: a flicker-person no longer counts toward personCount nor
+                    // sets the headline proximity/severity. A CONFIRMED person is
+                    // unaffected (and now carries a proximity-consistent severity
+                    // via ActorTracker.toActor()). Non-person classes keep their
+                    // existing isStaticForTimeline-only gate.
+                    boolean contributesToHeadline = !a.isStaticForTimeline
+                            && !(a.classGroup == Actor.ClassGroup.PERSON && !a.confirmed);
+                    if (contributesToHeadline) {
                         switch (a.classGroup) {
                             case PERSON:  personCount++;  break;
                             case VEHICLE: vehicleCount++; break;

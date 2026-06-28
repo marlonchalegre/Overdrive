@@ -138,7 +138,12 @@ public final class ThumbnailBuffer {
             // already excludes these (RecordingsApiHandler honours the result
             // for the distance chip filter). Mirror the same gate here so the
             // hero / per-actor JPEGs agree with the recording-level summary.
-            if (a.isStatic
+            // Timeline-static superset: also exclude a parked car detected via
+            // the never-moved signal (which may not have latched the severity-path
+            // isStatic under sparse cadence) from the hero pool, so it can't win
+            // the thumbnail on an otherwise-empty event. PERSON unaffected
+            // (isStaticForTimeline == isStatic for persons).
+            if (a.isStaticForTimeline
                     && a.classGroup != Actor.ClassGroup.PERSON
                     && a.peakSeverity == Actor.Severity.NOTICE) {
                 continue;

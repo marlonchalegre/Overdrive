@@ -349,7 +349,8 @@ public class SurveillanceApiHandler {
             config.put("detectPerson", sentryConfig.isDetectPerson());
             config.put("detectCar", sentryConfig.isDetectCar());
             config.put("detectBike", sentryConfig.isDetectBike());
-            
+            config.put("detectAnimal", sentryConfig.isDetectAnimal());
+
             // SOTA: Distance preset and block settings
             config.put("distancePreset", sentryConfig.getDistancePreset().name());
             config.put("blockSize", sentryConfig.getBlockSize());
@@ -400,6 +401,7 @@ public class SurveillanceApiHandler {
             config.put("detectPerson", true);
             config.put("detectCar", true);
             config.put("detectBike", true);
+            config.put("detectAnimal", false);
             config.put("preRecordSeconds", 5);
             config.put("postRecordSeconds", 10);
         }
@@ -484,6 +486,7 @@ public class SurveillanceApiHandler {
             config.put("cameraLeft", cameras[3]);
             config.put("motionHeatmap", sentryConfig.isMotionHeatmapEnabled());
             config.put("filterDebugLog", sentryConfig.isFilterDebugLogEnabled());
+            config.put("discardEmptyBrightMotionEvents", sentryConfig.isDiscardEmptyBrightMotionEvents());
             config.put("telegramSendStartPing", sentryConfig.isTelegramSendStartPing());
             // Per-tier filter now lives in the telegram unified-config section
             // (see UnifiedTelegramConfig.K_TIER_*). Wire format on
@@ -597,6 +600,7 @@ public class SurveillanceApiHandler {
             config.put("cameraRear", true);
             config.put("motionHeatmap", false);
             config.put("filterDebugLog", false);
+            config.put("discardEmptyBrightMotionEvents", false);
             config.put("telegramSendStartPing", false);
             // Tier toggles live on the telegram unified-config section, so
             // they're available even when SurveillanceConfig isn't loaded.
@@ -813,7 +817,11 @@ public class SurveillanceApiHandler {
                 sentryConfig.setDetectBike(configJson.optBoolean("detectBike", true));
                 configChanged = true;
             }
-            
+            if (configJson.has("detectAnimal")) {
+                sentryConfig.setDetectAnimal(configJson.optBoolean("detectAnimal", false));
+                configChanged = true;
+            }
+
             // Apply object filters to running engine
             if (sentry != null && configChanged) {
                 sentry.setObjectFilters(
@@ -821,7 +829,8 @@ public class SurveillanceApiHandler {
                     sentryConfig.getAiConfidence(),
                     sentryConfig.isDetectPerson(),
                     sentryConfig.isDetectCar(),
-                    sentryConfig.isDetectBike()
+                    sentryConfig.isDetectBike(),
+                    sentryConfig.isDetectAnimal()
                 );
             }
             
@@ -1123,7 +1132,8 @@ public class SurveillanceApiHandler {
                     boolean dPerson = sentryConfig.isDetectPerson();
                     boolean dCar = sentryConfig.isDetectCar();
                     boolean dBike = sentryConfig.isDetectBike();
-                    sentry.setObjectFilters(minObjSize, confidence, dPerson, dCar, dBike);
+                    boolean dAnimal = sentryConfig.isDetectAnimal();
+                    sentry.setObjectFilters(minObjSize, confidence, dPerson, dCar, dBike, dAnimal);
                 }
                 
                 CameraDaemon.log(String.format("Distance set: %s (minObjectSize=%.0f%%)",
@@ -1217,6 +1227,11 @@ public class SurveillanceApiHandler {
             }
             if (configJson.has("motionHeatmap")) {
                 sentryConfig.setMotionHeatmapEnabled(configJson.optBoolean("motionHeatmap", false));
+                configChanged = true;
+            }
+            if (configJson.has("discardEmptyBrightMotionEvents")) {
+                sentryConfig.setDiscardEmptyBrightMotionEvents(
+                        configJson.optBoolean("discardEmptyBrightMotionEvents", false));
                 configChanged = true;
             }
             if (configJson.has("filterDebugLog")) {

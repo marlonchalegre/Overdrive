@@ -33,7 +33,6 @@ public class QualitySettingsApiHandler {
     @Deprecated
     private static String recordingBitrate = "STANDARD";
     private static String recordingCodec = "H264";      // H264 or H265
-    private static int segmentDurationMinutes = com.overdrive.app.util.Constants.SEGMENT_DURATION_MINUTES;       // Clip segment duration in minutes
     
     private static final String UNIFIED_CONFIG_FILE = "/data/local/tmp/overdrive_config.json";
     private static final String LEGACY_SETTINGS_FILE = "/data/local/tmp/camera_settings.json";
@@ -404,52 +403,55 @@ public class QualitySettingsApiHandler {
                 return;
             }
             
-            // Calculate how much will be deleted before applying changes
-            long recordingsToDelete = 0;
-            long surveillanceToDelete = 0;
-            int recordingsFilesToDelete = 0;
-            int surveillanceFilesToDelete = 0;
-            
+            // Apply the limit changes. setRecordingsLimitMb / setSurveillanceLimitMb
+            // are cheap (clamp + saveConfig) and MUST run on the request path so the
+            // echoed getRecordingsLimitMb() in the response reflects the committed
+            // value. The expensive part — getRecordingsSize()/getRecordingsCount(),
+            // which walk every file in the active dir (a FUSE/SD walk that froze the
+            // UI on Apply) — was the deletion ESTIMATE only, used to enrich the toast.
+            // That work is now deferred to the async cleanup thread below; the actual
+            // reaping is what the user cares about, and the client refreshes storage
+            // stats ~1s after Apply regardless. So the HTTP response no longer blocks
+            // on a directory walk.
+            boolean limitChanged = false;
             if (settings.has("recordingsLimitMb")) {
                 long newLimit = settings.getLong("recordingsLimitMb");
-                long currentSize = storage.getRecordingsSize();
-                long newLimitBytes = newLimit * 1024 * 1024;
-                if (currentSize > newLimitBytes) {
-                    recordingsToDelete = currentSize - newLimitBytes;
-                    // Estimate files to delete (rough estimate based on average file size)
-                    int count = storage.getRecordingsCount();
-                    if (count > 0) {
-                        long avgSize = currentSize / count;
-                        recordingsFilesToDelete = (int) Math.ceil((double) recordingsToDelete / avgSize);
-                    }
-                }
                 storage.setRecordingsLimitMb(newLimit);
+                limitChanged = true;
                 CameraDaemon.log("Recordings limit set to: " + newLimit + " MB");
             }
-            
+
             if (settings.has("surveillanceLimitMb")) {
                 long newLimit = settings.getLong("surveillanceLimitMb");
-                long currentSize = storage.getSurveillanceSize();
-                long newLimitBytes = newLimit * 1024 * 1024;
-                if (currentSize > newLimitBytes) {
-                    surveillanceToDelete = currentSize - newLimitBytes;
-                    // Estimate files to delete
-                    int count = storage.getSurveillanceCount();
-                    if (count > 0) {
-                        long avgSize = currentSize / count;
-                        surveillanceFilesToDelete = (int) Math.ceil((double) surveillanceToDelete / avgSize);
-                    }
-                }
                 storage.setSurveillanceLimitMb(newLimit);
+                limitChanged = true;
                 CameraDaemon.log("Surveillance limit set to: " + newLimit + " MB");
             }
-            
-            // Run cleanup async to not block HTTP response
+
+            // Run cleanup async to not block HTTP response. The size tally that used
+            // to gate the response (and freeze the UI) now lives here purely for the
+            // log line — the reap inside runCleanup() enforces the new limit anyway.
             new Thread(() -> {
+                try {
+                    long recDelta = 0, survDelta = 0;
+                    long recSize = storage.getRecordingsSize();
+                    long recLimitBytes = storage.getRecordingsLimitMb() * 1024 * 1024;
+                    if (recSize > recLimitBytes) recDelta = recSize - recLimitBytes;
+                    long survSize = storage.getSurveillanceSize();
+                    long survLimitBytes = storage.getSurveillanceLimitMb() * 1024 * 1024;
+                    if (survSize > survLimitBytes) survDelta = survSize - survLimitBytes;
+                    if (recDelta > 0 || survDelta > 0) {
+                        CameraDaemon.log("Storage limit change will reap ~"
+                            + StorageManager.formatSize(recDelta) + " recordings, ~"
+                            + StorageManager.formatSize(survDelta) + " surveillance");
+                    }
+                } catch (Throwable t) {
+                    CameraDaemon.log("Storage reap-estimate failed (non-fatal): " + t.getMessage());
+                }
                 storage.runCleanup();
                 CameraDaemon.log("Storage cleanup completed after limit change");
             }, "StorageLimitCleanup").start();
-            
+
             JSONObject response = new JSONObject();
             response.put("success", true);
             response.put("recordingsLimitMb", storage.getRecordingsLimitMb());
@@ -460,19 +462,13 @@ public class QualitySettingsApiHandler {
             response.put("surveillanceStorageTypeActive", storage.getActiveSurveillanceStorageType().name());
             response.put("recordingsPath", storage.getRecordingsPath());
             response.put("surveillancePath", storage.getSurveillancePath());
-            
-            // Include cleanup info in response
-            if (recordingsToDelete > 0 || surveillanceToDelete > 0) {
-                JSONObject cleanup = new JSONObject();
-                if (recordingsToDelete > 0) {
-                    cleanup.put("recordingsToDelete", StorageManager.formatSize(recordingsToDelete));
-                    cleanup.put("recordingsFilesEstimate", recordingsFilesToDelete);
-                }
-                if (surveillanceToDelete > 0) {
-                    cleanup.put("surveillanceToDelete", StorageManager.formatSize(surveillanceToDelete));
-                    cleanup.put("surveillanceFilesEstimate", surveillanceFilesToDelete);
-                }
-                response.put("cleanup", cleanup);
+
+            // Toast message. The precise per-file deletion estimate is no longer
+            // computed on the request path (it required a blocking dir walk), so we
+            // surface a generic "cleanup will run" message when a limit changed and
+            // there's anything to potentially reap. The exact freed size shows up via
+            // the client's post-save storage-stats refresh.
+            if (limitChanged) {
                 response.put("message", Messages.get("messages.quality_storage_settings_updated_cleanup"));
             } else if (storageTypeChanged) {
                 response.put("message", Messages.get("messages.quality_storage_location_changed"));
@@ -773,9 +769,6 @@ public class QualitySettingsApiHandler {
                         recordingQuality = "STANDARD";
                         recordingBitrate = "STANDARD";
                     }
-                    if (recording.has("segmentDurationMinutes")) {
-                        segmentDurationMinutes = recording.getInt("segmentDurationMinutes");
-                    }
                     currentBitrate = recordingBitrate;
                 }
                 
@@ -809,7 +802,6 @@ public class QualitySettingsApiHandler {
         response.put("recordingQuality", activeTier.name());
         response.put("streamingQuality", currentStreamQuality);
         response.put("recordingCodec", currentCodec);
-        response.put("segmentDurationMinutes", segmentDurationMinutes);
         response.put("lastModified", lastModified);
         
         // Camera FPS setting
@@ -822,6 +814,15 @@ public class QualitySettingsApiHandler {
             }
         } catch (Exception e) { /* use default */ }
         response.put("cameraFps", currentFps);
+
+        // Shared clip segment length (minutes) — same key both axes read.
+        try {
+            response.put("segmentDurationMinutes",
+                com.overdrive.app.config.UnifiedConfigManager.getSegmentDurationMinutes());
+        } catch (Exception ignored) {
+            response.put("segmentDurationMinutes",
+                com.overdrive.app.util.Constants.SEGMENT_DURATION_MINUTES);
+        }
 
         // Surface measured FPS so the UI can show actualFps when HAL clamps
         // below requested (e.g., user picks 30, HAL emits ~26 panoramic on
@@ -1048,37 +1049,6 @@ public class QualitySettingsApiHandler {
                 }
             }
 
-            if (settings.has("segmentDurationMinutes")) {
-                int duration = settings.getInt("segmentDurationMinutes");
-                if (duration != 2 && duration != 5 && duration != 10) {
-                    CameraDaemon.log("Rejecting segmentDurationMinutes=" + duration + " — must be 2, 5, or 10");
-                    rejected.put(new JSONObject()
-                        .put("field", "segmentDurationMinutes").put("value", duration)
-                        .put("reason", "must be 2, 5, or 10"));
-                } else {
-                    segmentDurationMinutes = duration;
-                    CameraDaemon.log("Segment duration set to: " + duration + " minutes");
-                    
-                    try {
-                        com.overdrive.app.surveillance.GpuSurveillancePipeline pano = CameraDaemon.getGpuPipeline();
-                        if (pano != null) {
-                            pano.updateSegmentDuration(duration);
-                        }
-                    } catch (Throwable t) {
-                        CameraDaemon.log("Failed to update live pano segment duration: " + t.getMessage());
-                    }
-                    
-                    try {
-                        com.overdrive.app.camera.OemDashcamPipeline oemPipe = CameraDaemon.getOemDashcamPipeline();
-                        if (oemPipe != null) {
-                            oemPipe.updateSegmentDuration(duration);
-                        }
-                    } catch (Throwable t) {
-                        CameraDaemon.log("Failed to update live OEM segment duration: " + t.getMessage());
-                    }
-                }
-            }
-
             // Mirror recording quality / codec / fps into the OEM Dashcam
             // section. Without this, the new oem.recordingQuality slot is
             // never written by the existing recording.html UI and OEM falls
@@ -1192,6 +1162,38 @@ public class QualitySettingsApiHandler {
                 }
             }
 
+            // Clip segment length (minutes). Single shared key consumed by
+            // BOTH recording axes. Validated to the discrete 2/5/10 set,
+            // persisted to recording.segmentDurationMinutes, and live-applied
+            // to whichever pipeline(s) are running so the change takes effect
+            // on the next rotation without an encoder reinit.
+            if (settings.has("segmentDurationMinutes")) {
+                int duration = settings.optInt("segmentDurationMinutes", 2);
+                if (duration != 2 && duration != 5 && duration != 10) {
+                    CameraDaemon.log("Rejecting segmentDurationMinutes=" + duration
+                        + " — must be 2, 5, or 10");
+                    rejected.put(new JSONObject()
+                        .put("field", "segmentDurationMinutes").put("value", duration)
+                        .put("reason", "must be 2, 5, or 10"));
+                } else {
+                    com.overdrive.app.config.UnifiedConfigManager
+                        .setSegmentDurationMinutes(duration);
+                    CameraDaemon.log("Clip segment duration set to: " + duration + " min");
+                    // Live-apply to the dashcam (ACC-on) axis.
+                    com.overdrive.app.surveillance.GpuSurveillancePipeline gp =
+                        CameraDaemon.getGpuPipeline();
+                    if (gp != null) {
+                        try { gp.updateSegmentDuration(duration); } catch (Exception ignored) {}
+                    }
+                    // Live-apply to the OEM / surveillance (ACC-off) axis.
+                    com.overdrive.app.camera.OemDashcamPipeline oem =
+                        CameraDaemon.getOemDashcamPipeline();
+                    if (oem != null) {
+                        try { oem.updateSegmentDuration(duration); } catch (Exception ignored) {}
+                    }
+                }
+            }
+
             // ── Apply the recording-encoder knobs in a single batched call ───
             com.overdrive.app.surveillance.GpuSurveillancePipeline pipeline = CameraDaemon.getGpuPipeline();
             if (pipeline != null) {
@@ -1296,10 +1298,6 @@ public class QualitySettingsApiHandler {
                             CameraDaemon.log("Restored recording codec from unified: " + codec);
                         }
                     }
-                    if (recording.has("segmentDurationMinutes")) {
-                        segmentDurationMinutes = recording.getInt("segmentDurationMinutes");
-                        CameraDaemon.log("Restored segment duration from unified: " + segmentDurationMinutes + " minutes");
-                    }
                 }
                 
                 JSONObject streaming = unified.optJSONObject("streaming");
@@ -1386,48 +1384,20 @@ public class QualitySettingsApiHandler {
      */
     public static void persistSettings() {
         try {
-            boolean recChanged = true;
-            try {
-                org.json.JSONObject currentRec = com.overdrive.app.config.UnifiedConfigManager.getRecording();
-                if (currentRec != null) {
-                    recChanged = !recordingQuality.equals(currentRec.optString("recordingQuality", ""))
-                            || !recordingQuality.equals(currentRec.optString("quality", ""))
-                            || !recordingCodec.equals(currentRec.optString("codec", ""))
-                            || segmentDurationMinutes != currentRec.optInt("segmentDurationMinutes", -1);
-                }
-            } catch (Exception ignored) {}
+            org.json.JSONObject recording = new org.json.JSONObject();
+            // Canonical tier; `quality` is the legacy mirror. We deliberately
+            // do NOT write `bitrate` (LOW/MEDIUM/HIGH) — that's the field
+            // that historically drifted out of sync with the active tier.
+            recording.put("recordingQuality", recordingQuality);
+            recording.put("quality", recordingQuality);
+            recording.put("codec", recordingCodec);
+            com.overdrive.app.config.UnifiedConfigManager.updateSection("recording", recording);
 
-            boolean streamChanged = true;
-            try {
-                org.json.JSONObject currentStream = com.overdrive.app.config.UnifiedConfigManager.getStreaming();
-                if (currentStream != null) {
-                    streamChanged = !StreamingApiHandler.getStreamingQuality().equals(currentStream.optString("quality", ""));
-                }
-            } catch (Exception ignored) {}
+            org.json.JSONObject streaming = new org.json.JSONObject();
+            streaming.put("quality", StreamingApiHandler.getStreamingQuality());
+            com.overdrive.app.config.UnifiedConfigManager.updateSection("streaming", streaming);
 
-            boolean persistedAny = false;
-            if (recChanged) {
-                org.json.JSONObject recording = new org.json.JSONObject();
-                recording.put("recordingQuality", recordingQuality);
-                recording.put("quality", recordingQuality);
-                recording.put("codec", recordingCodec);
-                recording.put("segmentDurationMinutes", segmentDurationMinutes);
-                com.overdrive.app.config.UnifiedConfigManager.updateSection("recording", recording);
-                persistedAny = true;
-            }
-
-            if (streamChanged) {
-                org.json.JSONObject streaming = new org.json.JSONObject();
-                streaming.put("quality", StreamingApiHandler.getStreamingQuality());
-                com.overdrive.app.config.UnifiedConfigManager.updateSection("streaming", streaming);
-                persistedAny = true;
-            }
-
-            if (persistedAny) {
-                CameraDaemon.log("Settings persisted via UnifiedConfigManager");
-            } else {
-                CameraDaemon.log("No settings changes detected, skipping persistence write");
-            }
+            CameraDaemon.log("Settings persisted via UnifiedConfigManager");
         } catch (Exception e) {
             CameraDaemon.log("Could not persist settings: " + e.getMessage());
         }
@@ -1437,15 +1407,6 @@ public class QualitySettingsApiHandler {
     public static String getRecordingQuality() { return recordingQuality; }
     public static String getRecordingBitrate() { return recordingBitrate; }
     public static String getRecordingCodec() { return recordingCodec; }
-    public static int getSegmentDurationMinutes() { return segmentDurationMinutes; }
-    
-    public static void setSegmentDurationMinutes(int durationMinutes) {
-        if (durationMinutes >= com.overdrive.app.util.Constants.MIN_SEGMENT_DURATION_MINUTES 
-                && durationMinutes <= com.overdrive.app.util.Constants.MAX_SEGMENT_DURATION_MINUTES) {
-            segmentDurationMinutes = durationMinutes;
-            persistSettings();
-        }
-    }
     
     // Static setters for app UI and IPC. recordingQuality accepts the new
     // tier names (ECONOMY..MAX); legacy names are migrated to STANDARD per

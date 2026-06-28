@@ -122,7 +122,6 @@ public class OemDashcamPipeline {
     private int bitrate = DEFAULT_BITRATE;
     private String codecMimeType = MediaFormat.MIMETYPE_VIDEO_AVC;
     private int oemDashcamCameraId = -1;
-    private int segmentDurationMinutes = com.overdrive.app.util.Constants.SEGMENT_DURATION_MINUTES;
 
     // EGL + GL
     private EGLCore eglCore;
@@ -214,7 +213,12 @@ public class OemDashcamPipeline {
     private volatile Object cameraObj;
 
     // Recording encoder — H.265 @ recording quality, writes dvr_*.mp4.
-    private HardwareEventRecorderGpu encoder;
+    // volatile: assigned on the GL thread (initEglAndEncoder /
+    // reinitializeEncoder) but read from the API thread (updateSegmentDuration,
+    // isEncoderFormatAvailable, getEncoder, triggerEventRecording). Without it
+    // the JMM gives no happens-before edge, so the API thread could observe a
+    // stale/null reference. Mirrors GpuSurveillancePipeline.encoder.
+    private volatile HardwareEventRecorderGpu encoder;
     private Surface encoderSurface;
 
     // Threads. Earlier audit suggested consolidating the SurfaceTexture
@@ -436,6 +440,26 @@ public class OemDashcamPipeline {
         return running.get();
     }
 
+    /**
+     * Live-apply a new clip segment length (minutes) to the running OEM /
+     * surveillance encoder without a reinit. Takes effect on the next
+     * rotation. Called by the quality API when the user changes the shared
+     * Clip Duration control. No-op if the encoder isn't up.
+     */
+    public void updateSegmentDuration(int minutes) {
+        try {
+            int clamped = Math.max(
+                com.overdrive.app.util.Constants.MIN_SEGMENT_DURATION_MINUTES,
+                Math.min(com.overdrive.app.util.Constants.MAX_SEGMENT_DURATION_MINUTES, minutes));
+            HardwareEventRecorderGpu enc = encoder;
+            if (enc != null) {
+                enc.setSegmentDurationMs(clamped * 60_000L);
+            }
+        } catch (Throwable t) {
+            logger.warn("updateSegmentDuration failed: " + t.getMessage());
+        }
+    }
+
     /** True iff the pipeline has progressed far enough that downstream
      *  consumers can safely sample its EXTERNAL_OES texture and bind to
      *  its EGLCore. {@link #isRunning} flips true at the top of
@@ -474,14 +498,6 @@ public class OemDashcamPipeline {
      */
     public HardwareEventRecorderGpu getEncoder() {
         return encoder;
-    }
-
-    public void updateSegmentDuration(int durationMinutes) {
-        this.segmentDurationMinutes = durationMinutes;
-        HardwareEventRecorderGpu enc = encoder;
-        if (enc != null) {
-            enc.setSegmentDurationMs(java.util.concurrent.TimeUnit.MINUTES.toMillis(durationMinutes));
-        }
     }
 
     /** Trigger a continuous-recording segment. Filename is {@code dvr_*}.
@@ -871,9 +887,6 @@ public class OemDashcamPipeline {
             bitrate = bitrateForQuality(quality);
 
             bitrate = applyBitrateBudgetCap(bitrate, oem, rec, cam);
-            int requestedDuration = rec.optInt("segmentDurationMinutes", com.overdrive.app.util.Constants.SEGMENT_DURATION_MINUTES);
-            segmentDurationMinutes = Math.max(com.overdrive.app.util.Constants.MIN_SEGMENT_DURATION_MINUTES,
-                Math.min(com.overdrive.app.util.Constants.MAX_SEGMENT_DURATION_MINUTES, requestedDuration));
         } catch (Throwable t) {
             logger.warn("applyRecordingConfigFromUcm failed: " + t.getMessage());
         }
@@ -1060,7 +1073,6 @@ public class OemDashcamPipeline {
         runOnGlThreadAndWait(() -> {
             try {
                 encoder = new HardwareEventRecorderGpu(width, height, fps, bitrate, codecMimeType);
-                encoder.setSegmentDurationMs(java.util.concurrent.TimeUnit.MINUTES.toMillis(segmentDurationMinutes));
                 // Skip KEY_OPERATING_RATE so we don't over-subscribe the
                 // single Venus H.264 block when pano is also encoding.
                 // Pano keeps its pin (it's the primary recorder); OEM
@@ -1087,6 +1099,16 @@ public class OemDashcamPipeline {
                 // "Recording" indefinitely while the muxer was already
                 // dead and the .tmp was unrecoverable.
                 encoder.setWriterAbortListener(this::handleWriterAbort);
+                // Seed the clip segment length from the shared recording config
+                // so the OEM / ACC-off surveillance axis rotates at the same
+                // user-chosen interval (2/5/10 min) as the dashcam axis — one
+                // control, both axes (mirrors rectifyStrength sharing).
+                try {
+                    int segMin = UnifiedConfigManager.getSegmentDurationMinutes();
+                    encoder.setSegmentDurationMs(segMin * 60_000L);
+                } catch (Throwable t) {
+                    logger.warn("Failed to apply segment duration: " + t.getMessage());
+                }
                 encoder.init();
                 encoderSurface = encoder.getInputSurface();
                 if (encoderSurface == null) {

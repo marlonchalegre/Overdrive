@@ -84,15 +84,33 @@ public class HardwareEventRecorderGpu {
     private int bitrate;
     private String codecMimeType = MediaFormat.MIMETYPE_VIDEO_AVC;  // Default H.264
 
-    // KEY_OPERATING_RATE pin policy. Default true (legacy pano behaviour —
-    // pin at fps so the SoC governor can't downclock the encoder mid-segment
-    // and stall eglSwap). When two encoders run concurrently on the single
+    // ── A/B TEST TOGGLE ──────────────────────────────────────────────────
+    // KEY_OPERATING_RATE pin master switch. Currently FALSE to address the
+    // "recorded video smooth but whole head unit laggy" symptom: when pinned,
+    // the encoder holds the Venus / GPU clock at full frequency for the entire
+    // recording (no DVFS-down between frames), which raises sustained SoC
+    // temperature and can make the thermal governor throttle the cores the BYD
+    // UI runs on — our pinned encode stays smooth while the un-pinned OEM UI
+    // loses the clock lottery.
+    //   false = (current) let Venus DVFS down between frames — cooler SoC, less
+    //           thermal throttling of the OEM UI. Risk: may reintroduce the
+    //           100-200ms eglSwap stalls in OUR recording the pin was added to
+    //           prevent (v18.1). Watch recorded clips for freeze-and-skip; if
+    //           it returns, flip back to true.
+    //   true  = pin at fps (legacy behaviour, added v18.1) — smoother OUR video,
+    //           hotter SoC.
+    // Affects the PRIMARY recorder only; secondary encoders (OEM dashcam, live
+    // stream) already force this off via setPinOperatingRate(false).
+    private static final boolean PIN_OPERATING_RATE = false;
+
+    // KEY_OPERATING_RATE pin policy. Initialised from the PIN_OPERATING_RATE
+    // master switch above. When two encoders run concurrently on the single
     // SDM665 Venus H.264 block, both pinning at fps over-subscribes the
     // firmware's frequency budget and produces the exact stalls the pin was
     // meant to prevent. Secondary encoders (e.g. OEM dashcam alongside pano)
-    // should call setPinOperatingRate(false) before init() so only the
-    // primary encoder claims the frequency lock.
-    private boolean pinOperatingRate = true;
+    // call setPinOperatingRate(false) before init() so only the primary
+    // encoder claims the frequency lock.
+    private boolean pinOperatingRate = PIN_OPERATING_RATE;
     
     // Encoder
     // Volatile because release() (lifecycle thread) nulls this while the
@@ -1019,7 +1037,7 @@ public class HardwareEventRecorderGpu {
     private final java.util.concurrent.atomic.AtomicLong ptsReanchorCount =
         new java.util.concurrent.atomic.AtomicLong(0);
     // Largest plausible inter-frame gap for a real recording. Clips rotate
-    // every 2 minutes (SEGMENT_DURATION_MS) and the GL watchdog force-restarts
+    // every segmentDurationMs (2/5/10 min) and the GL watchdog force-restarts
     // the pipeline after a 3 s frame stall, so no legitimate gap between two
     // consecutive written video frames approaches this value even at the low
     // fps floor. A larger gap is a clock-domain jump (the BYD DiLink HAL
@@ -1058,6 +1076,11 @@ public class HardwareEventRecorderGpu {
     
     // Segment rotation
     private long segmentStartTime = 0;
+    // Live, per-instance clip segment length. Seeded from the shared default
+    // (2 min) and overridden via setSegmentDurationMs() — both recording axes
+    // read recording.segmentDurationMinutes and push it here at encoder init,
+    // and the API handler pushes live changes. volatile so the API thread's
+    // write is visible to the drainer thread's rotation check without a lock.
     private volatile long segmentDurationMs = com.overdrive.app.util.Constants.SEGMENT_DURATION_MS;
     // Debounce window for forceSegmentRotation: if the current segment was
     // started less than this many ms ago, a force-rotation is treated as a
@@ -1615,14 +1638,34 @@ public class HardwareEventRecorderGpu {
         }
     }
 
+    /**
+     * Sets the live clip segment length in milliseconds. Both recording axes
+     * push the shared recording.segmentDurationMinutes value here at encoder
+     * init, and the quality API pushes live edits. Safe to call at any time:
+     * volatile field, read by the drainer thread's rotation check. A change
+     * takes effect on the NEXT rotation — the in-progress segment keeps its
+     * original length (no mid-segment retiming, no muxer disturbance).
+     *
+     * Ignores non-positive values defensively so a corrupt config can never
+     * disable rotation (which would let a single .mp4.tmp grow unbounded and
+     * stay unfinalized/unplayable).
+     */
     public void setSegmentDurationMs(long durationMs) {
-        if (durationMs > 0) {
-            this.segmentDurationMs = durationMs;
+        if (durationMs <= 0) {
+            logger.warn("Ignoring non-positive segmentDurationMs=" + durationMs
+                + " (keeping " + segmentDurationMs + "ms)");
+            return;
+        }
+        if (durationMs != segmentDurationMs) {
+            segmentDurationMs = durationMs;
+            logger.info("Clip segment duration set to " + (durationMs / 1000) + "s "
+                + "(applies on next rotation)");
         }
     }
 
+    /** Current live clip segment length in milliseconds. */
     public long getSegmentDurationMs() {
-        return this.segmentDurationMs;
+        return segmentDurationMs;
     }
 
     /**
@@ -2537,9 +2580,27 @@ public class HardwareEventRecorderGpu {
             // recording sidecars) inherits the guarantee — leaving the fields NaN means
             // the sidecar writer omits the geo block entirely (no wrong pin), and
             // EventTimelineCollector's own fallback re-poll then governs the cold-start case.
-            long lastUpdate = gps.getLastUpdate();
+            // AGE against the MONOTONIC since-boot fix timestamp vs the daemon's own
+            // elapsedRealtime() — NOT getLastUpdate() (= send-time, refreshed by the
+            // sidecar's 4s keep-alive even when the fix is unchanged, so a parked
+            // car's stale fix read age≈0 and tagged the last drive's destination).
+            // Same device-wide monotonic clock on both sides → skew-immune, so the
+            // device RTC being wrong at cold boot can't drop a fresh fix's tag.
+            // Fallback when no monotonic basis (older sidecar / cache-loaded): age
+            // send-time vs currentTimeMillis() = prior behavior, never worse.
             long nowMs = System.currentTimeMillis();
-            long ageMs = lastUpdate > 0 ? Math.max(0L, nowMs - lastUpdate) : -1L;
+            long fixElapsed = gps.getFixElapsedMs();
+            long nowElapsed = android.os.SystemClock.elapsedRealtime();
+            long ageMs;
+            // Future-dated fixElapsed = cross-boot/incomparable basis (prior-boot
+            // last-known seed) → fall back to send-time aging, NOT clamp-to-fresh
+            // (which would tag a stale fix). Same fix as GeoSnapshot.capture.
+            if (fixElapsed > 0L && fixElapsed <= nowElapsed) {
+                ageMs = nowElapsed - fixElapsed;
+            } else {
+                long lu = gps.getLastUpdate();
+                ageMs = lu > 0 ? Math.max(0L, nowMs - lu) : -1L;
+            }
             boolean fresh = !gps.isLoadedFromCache()
                     && ageMs >= 0L
                     && ageMs <= GEO_FIX_MAX_AGE_MS;
@@ -3724,7 +3785,8 @@ public class HardwareEventRecorderGpu {
         if (isWritingToFile && segmentStartTime > 0 && drainerRunning && diskWriterRunning
                 && !writerAbortedCorrupt) {
             long elapsed = System.currentTimeMillis() - segmentStartTime;
-            if (elapsed >= segmentDurationMs) {
+            long cachedDuration = segmentDurationMs;
+            if (elapsed >= cachedDuration) {
                 if (savedFormat == null) {
                     // Encoder hasn't published its format yet — no frames have
                     // been encoded since segment start. Rotation would bail
@@ -3741,7 +3803,7 @@ public class HardwareEventRecorderGpu {
                             + "s) but encoder has not published format — frames are not flowing");
                         lastNoFormatRotationLogMs = now;
                     }
-                    segmentStartTime = now - segmentDurationMs + 5_000;
+                    segmentStartTime = now - cachedDuration + 5_000;
                 } else {
                     logger.info("Segment duration reached (" + (elapsed / 1000) + "s), rotating to new file...");
                     rotateSegment();

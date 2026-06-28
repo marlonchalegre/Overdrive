@@ -264,6 +264,18 @@ public class MqttConnectionManager {
 
         MqttConnectionConfig config = publisher.getConfig();
 
+        // Active health check, decoupled from whether a publish is due. The change-gated
+        // publish loop can skip idle cycles for up to maxIntervalSeconds, during which a
+        // silently-dropped link (idle NAT timeout, ACC-OFF data blackout) would otherwise
+        // go unnoticed — and QoS 0 means the eventual heartbeat publish can succeed into a
+        // half-open socket without throwing, so reconnect never triggers. Polling
+        // isConnected() each cycle lets us reconnect within ~keep-alive seconds of a drop.
+        try {
+            publisher.ensureAlive();
+        } catch (Exception e) {
+            logger.warn("Health check error for " + config.name + ": " + e.getMessage());
+        }
+
         try {
             // Collect telemetry (shared across all connections)
             JSONObject payload = collectTelemetry();

@@ -157,6 +157,17 @@ public class PanoramicCameraGpu {
     private EGLCore eglCore;
     private android.opengl.EGLSurface dummySurface;  // Pbuffer for headless context
     private int cameraTextureId;
+    // CRASH FIX (cross-context use-after-free): the AI-lane GL thread (AiLaneGl,
+    // 2nd shared EGL context) samples cameraTextureId for readback/foveated while
+    // this render thread can rebind a new EGLImage onto the same id or free the
+    // prior gralloc buffer (consumeLatestImageAndBind / consumeSurfaceTextureFrame
+    // / releaseCameraConsumer). Sampling a freed/swapped backing buffer mid-readback
+    // faults the Adreno driver (SIGSEGV in libGLESv2_adreno). Both sides hold this
+    // monitor around their texture access; the AI lane (AiLaneGl.processOnce) also
+    // re-checks isCameraTextureValid() inside the lock + issues glFinish() before
+    // releasing, so the GPU sample completes before the encoder can recycle the
+    // buffer. See AiLaneGl.CameraState.cameraTextureLock()/isCameraTextureValid().
+    private final Object cameraTextureLock = new Object();
     // Camera consumer: ImageReader → AHardwareBuffer → EGLImage →
     // cameraTextureId. Bypasses SurfaceFlinger throttling that clamps the
     // SurfaceTexture path to ~8.5 fps on DiLink50 5.0UI builds (verified by
@@ -760,6 +771,14 @@ public class PanoramicCameraGpu {
         final AiLaneGl.CameraState aiCameraState = new AiLaneGl.CameraState() {
             @Override public int getCameraTextureId() { return cameraTextureId; }
             @Override public long getFrameSeq()      { return cameraFrameSeq.get(); }
+            // Crash-fix: the AI lane must NOT sample the camera texture while the
+            // camera is yielded/closed/restarting (its backing EGLImage is being
+            // freed/swapped). cameraYielded / cameraObj==null / restartInProgress
+            // are all volatile/atomic — safe to read cross-thread.
+            @Override public boolean isCameraTextureValid() {
+                return !(cameraYielded || cameraObj == null || restartInProgress.get());
+            }
+            @Override public Object cameraTextureLock() { return cameraTextureLock; }
         };
 
         if (sentry != null) {
@@ -1492,6 +1511,14 @@ public class PanoramicCameraGpu {
 
     /** Idempotent teardown of whichever consumer is active. */
     private void releaseCameraConsumer() {
+        // Crash-fix (gap-closer): this runs on the GL render thread via
+        // recreateCameraSurface during live reacquire/auto-probe/restart while the
+        // AI lane is STILL alive — freeing the bound gralloc / releasing the
+        // SurfaceTexture here can race an in-flight AI-lane sample exactly like the
+        // rebind path. Hold cameraTextureLock across BOTH buffer-free sites (the
+        // top releasePreviousBoundImage AND the SurfaceTexture.release). Harmless
+        // when reached from releaseGl (AI lane already shut down there).
+        synchronized (cameraTextureLock) {
         // Release the held Image + HardwareBuffer FIRST so the gralloc slots
         // go back to the ImageReader pool before we close the reader.
         releasePreviousBoundImage();
@@ -1507,6 +1534,7 @@ public class PanoramicCameraGpu {
             try { cameraSurfaceTexture.setOnFrameAvailableListener(null); } catch (Throwable ignored) {}
             try { cameraSurfaceTexture.release(); } catch (Throwable ignored) {}
             cameraSurfaceTexture = null;
+        }
         }
         stFramePending = false;
         // Reset to identity so a stale matrix from the previous camera
@@ -1933,19 +1961,24 @@ public class PanoramicCameraGpu {
                 irBindFailCount++;
                 return false;
             }
-            boolean bound = HardwareBufferTextureBinder
-                .bindHardwareBufferToTextureNative(hwBuffer, cameraTextureId);
-            if (!bound) {
-                logger.warn("bindHardwareBufferToTexture failed — dropping frame");
-                irBindFailCount++;
-                return false;
+            // Crash-fix: hold cameraTextureLock across the rebind + prev-buffer
+            // free so the AI lane cannot be mid-sampling the OLD backing buffer
+            // when we swap the EGLImage / free the gralloc it points at.
+            synchronized (cameraTextureLock) {
+                boolean bound = HardwareBufferTextureBinder
+                    .bindHardwareBufferToTextureNative(hwBuffer, cameraTextureId);
+                if (!bound) {
+                    logger.warn("bindHardwareBufferToTexture failed — dropping frame");
+                    irBindFailCount++;
+                    return false;
+                }
+                // Bind succeeded. NOW it's safe to release the previous image —
+                // the texture is no longer pointing at it.
+                releasePreviousBoundImage();
+                // Transfer ownership of this image+hwBuffer into the held slots.
+                currentBoundImage = image;
+                currentBoundHwBuffer = hwBuffer;
             }
-            // Bind succeeded. NOW it's safe to release the previous image —
-            // the texture is no longer pointing at it.
-            releasePreviousBoundImage();
-            // Transfer ownership of this image+hwBuffer into the held slots.
-            currentBoundImage = image;
-            currentBoundHwBuffer = hwBuffer;
             // Resolve the per-frame PTS. The BYD DiLink HAL on the PRIVATE
             // ImageReader path returns a stuck, different-epoch value for
             // Image.getTimestamp(), so nextFrameTimestampNs() ignores it and
@@ -1993,7 +2026,12 @@ public class PanoramicCameraGpu {
         SurfaceTexture st = cameraSurfaceTexture;
         if (st == null) return false;
         try {
-            st.updateTexImage();
+            // Crash-fix: updateTexImage swaps the backing EGLImage of
+            // cameraTextureId; hold cameraTextureLock so the AI lane isn't
+            // mid-sampling the prior buffer when it's recycled.
+            synchronized (cameraTextureLock) {
+                st.updateTexImage();
+            }
         } catch (IllegalStateException e) {
             // The BYD HAL can abandon the BufferQueue asynchronously (gear
             // transitions, AVM open/close). updateTexImage then throws ISE —

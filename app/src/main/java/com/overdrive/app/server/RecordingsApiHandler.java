@@ -1147,6 +1147,27 @@ public class RecordingsApiHandler {
      * directory until disk fills (the loop-rotation cleanup also doesn't see
      * them because it only iterates .mp4 files).
      */
+    /**
+     * Public wrapper so the surveillance engine (different package) can delete an
+     * event's sidecars when discarding a confirmed-empty false-positive recording.
+     * Also removes the {@code .srt} subtitle sibling, which the private
+     * {@link #deleteSidecars} historically did not cover.
+     */
+    public static void deleteEventSidecars(File mp4File, String filename) {
+        if (mp4File == null || filename == null) return;
+        deleteSidecars(mp4File, filename);
+        // .srt parity (deleteSidecars only handles .json/.jpg).
+        try {
+            File parent = mp4File.getParentFile();
+            if (parent != null) {
+                String base = filename.endsWith(".mp4")
+                        ? filename.substring(0, filename.length() - 4) : filename;
+                File srt = new File(parent, base + ".srt");
+                if (srt.exists()) srt.delete();
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private static void deleteSidecars(File mp4File, String filename) {
         // Invalidate the in-memory parse cache so the next /api/recordings
         // call doesn't return a phantom entry for the just-deleted file.
@@ -1171,6 +1192,11 @@ public class RecordingsApiHandler {
         String jsonName = filename.replace(".mp4", ".json");
         File jsonFile = new File(mp4File.getParentFile(), jsonName);
         if (jsonFile.exists()) jsonFile.delete();
+
+        // SRT subtitle sidecar (parity — future callers shouldn't re-hit the gap).
+        String srtName = filename.replace(".mp4", ".srt");
+        File srtFile = new File(mp4File.getParentFile(), srtName);
+        if (srtFile.exists()) srtFile.delete();
 
         // Cached thumbnail
         String thumbName = filename.replace(".mp4", ".jpg");

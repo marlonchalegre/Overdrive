@@ -515,6 +515,10 @@ public class HttpServer {
                 if (!serveStaticFile(out, "local/trips.html")) {
                     HttpResponse.sendError(out, 404, "trips.html not found");
                 }
+            } else if (path.equals("/charging.html") || path.equals("/charging")) {
+                if (!serveStaticFile(out, "local/charging.html")) {
+                    HttpResponse.sendError(out, 404, "charging.html not found");
+                }
             } else if (path.equals("/vehicle-control.html") || path.equals("/vehicle-control")) {
                 if (!serveStaticFile(out, "local/vehicle-control.html")) {
                     HttpResponse.sendError(out, 404, "vehicle-control.html not found");
@@ -731,13 +735,42 @@ public class HttpServer {
                         HttpResponse.sendError(out, status, result.toString());
                     }
                     return true;
+                } else {
+                    HttpResponse.sendJsonError(out, "Request failed or path not recognized");
+                    return true;
                 }
             } else {
                 HttpResponse.sendJsonError(out, "Trip analytics not initialized");
                 return true;
             }
         }
-        
+
+        // Charging Analytics API
+        if (path.startsWith("/api/charging")) {
+            com.overdrive.app.charging.ChargingSessionManager csm = CameraDaemon.getChargingSessionManager();
+            if (csm != null) {
+                com.overdrive.app.charging.ChargingApiHandler handler =
+                    new com.overdrive.app.charging.ChargingApiHandler(csm);
+                org.json.JSONObject result = handler.handleRequest(path, method, null, body);
+                if (result != null) {
+                    int status = result.optInt("_status", 200);
+                    result.remove("_status");
+                    if (status == 200) {
+                        HttpResponse.sendJson(out, result.toString());
+                    } else {
+                        HttpResponse.sendError(out, status, result.toString());
+                    }
+                    return true;
+                } else {
+                    HttpResponse.sendJsonError(out, "Charging handler returned null");
+                    return true;
+                }
+            } else {
+                HttpResponse.sendJsonError(out, "Charging analytics not initialized");
+                return true;
+            }
+        }
+
         // Audio Test API (AVAS speaker test)
         if (path.startsWith("/api/audio/")) {
             return AudioTestApiHandler.handle(method, path, body, out);
@@ -922,6 +955,69 @@ public class HttpServer {
                 // Surface the "estimated from SOC rate" flag so the UI can show
                 // a "~" prefix on the kW value (core.js already reads this).
                 charging.put("isEstimated", chargingState.isEstimated);
+
+                // Dashboard charging-card fields (consumed by index.html
+                // updateFromStatus). `charging`/`plugged`/`full`/`fault` are the
+                // discrete chip states; powerKw/socPercent/timeToFullMin feed the
+                // metric grid. `charging` uses ChargingDetector's fused verdict
+                // (BMS + power-MCU cross-check) rather than the raw HAL state.
+                boolean isChargingFused = false;
+                try {
+                    isChargingFused = com.overdrive.app.monitor.ChargingDetector.getInstance().isCharging();
+                } catch (Exception ignored) {
+                    isChargingFused = chargingState.status
+                        == com.overdrive.app.monitor.ChargingStateData.ChargingStatus.CHARGING;
+                }
+                boolean isFull = chargingState.status
+                    == com.overdrive.app.monitor.ChargingStateData.ChargingStatus.FINISHED;
+                boolean isPlugged = isFull || isChargingFused
+                    || chargingState.status == com.overdrive.app.monitor.ChargingStateData.ChargingStatus.READY
+                    || chargingState.status == com.overdrive.app.monitor.ChargingStateData.ChargingStatus.SCHEDULED;
+                charging.put("charging", isChargingFused);
+                charging.put("plugged", isPlugged);
+                charging.put("full", isFull);
+                charging.put("fault", chargingState.isError);
+                charging.put("powerKw", chargingState.chargingPowerKW);
+                double socForCardPct = -1;
+                try {
+                    com.overdrive.app.monitor.BatterySocData socForCard = vehicleMonitor.getBatterySoc();
+                    if (socForCard != null) {
+                        socForCardPct = socForCard.socPercent;
+                        charging.put("socPercent", socForCard.socPercent);
+                    }
+                } catch (Exception ignored) {}
+                // Session energy added so far (the dashboard "Session"/"Added"
+                // metric). (soc - startSoc) × nominal pack kWh for the currently
+                // open session. Mirrors ChargingApiHandler.buildLiveBlock(); the
+                // dashboard polls /status, not /api/charging/live, so this block
+                // has to emit sessionKwh itself or the card stays blank.
+                try {
+                    com.overdrive.app.monitor.SocHistoryDatabase db =
+                        com.overdrive.app.monitor.SocHistoryDatabase.getInstance();
+                    if (db != null && db.getOpenChargingSessionStart() > 0 && socForCardPct >= 0) {
+                        double startSoc = db.getOpenChargingSessionStartSoc();
+                        com.overdrive.app.abrp.SohEstimator soh = db.getSohEstimator();
+                        double nominal = soh != null ? soh.getNominalCapacityKwh() : 0;
+                        if (startSoc >= 0 && socForCardPct > startSoc && nominal > 0) {
+                            double sessionKwh = (socForCardPct - startSoc) / 100.0 * nominal;
+                            if (sessionKwh > 0) charging.put("sessionKwh", sessionKwh);
+                        }
+                    }
+                } catch (Exception ignored) {}
+                // Time-to-full from the BYD rest-time fields, if available.
+                try {
+                    com.overdrive.app.byd.BydDataCollector col = com.overdrive.app.byd.BydDataCollector.getInstance();
+                    if (col != null && col.isInitialized()) {
+                        com.overdrive.app.byd.BydVehicleData vd = col.getData();
+                        int UNAVAIL = com.overdrive.app.byd.BydVehicleData.UNAVAILABLE;
+                        if (vd != null && (vd.chargingRestTimeHours != UNAVAIL || vd.chargingRestTimeMinutes != UNAVAIL)) {
+                            int ttf = (vd.chargingRestTimeHours != UNAVAIL ? vd.chargingRestTimeHours * 60 : 0)
+                                    + (vd.chargingRestTimeMinutes != UNAVAIL ? vd.chargingRestTimeMinutes : 0);
+                            if (ttf > 0) charging.put("timeToFullMin", ttf);
+                        }
+                    }
+                } catch (Exception ignored) {}
+
                 status.put("charging", charging);
             }
             

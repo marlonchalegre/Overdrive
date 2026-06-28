@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#00876C">
     <script src="../shared/theme.js?v=5"></script>
-    <script src="../shared/app-shell.js"></script>
+    <script src="../shared/app-shell.js?v=2"></script>
     <!--
       Per-page bottom-tab manifest. Five tabs grouped by user task:
         General   — mode toggle + schedule + deterrent (when/how surveillance runs)
@@ -33,7 +33,7 @@
         ];
     </script>
     <script src="../shared/app-tabs.js"></script>
-    <link rel="stylesheet" href="../shared/styles.css?v=16">
+    <link rel="stylesheet" href="../shared/styles.css?v=17">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
     <style>
@@ -339,6 +339,21 @@
                         </div>
                         <div class="setting-hint" id="shadowFilterHint" data-i18n="surveillance.shadow_hint.2">Normal works well for most outdoor parking. Use Aggressive if parked under trees with heavy shadow movement.</div>
 
+                        <!-- Aggressively discard non-actor recordings -->
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name" data-i18n="surveillance.discard_empty_motion">Discard non-actor recordings</div>
+                                <div class="setting-desc" data-i18n="surveillance.discard_empty_motion_desc">Aggressively drop recordings where no real person or vehicle was tracked</div>
+                            </div>
+                            <div class="setting-control">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="v2DiscardEmptyMotion" onchange="SurvSettings.updateDiscardEmptyMotion()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-hint" id="discardEmptyMotionHint" data-i18n="surveillance.discard_empty_motion_hint">Good if you get false alerts from shadows or tree-branch movement — these clips are deleted automatically when nothing real was tracked. Caution: in low light or unclear conditions it can occasionally discard a real threat the AI failed to identify. Leave off if you'd rather keep every recording.</div>
+
                         <!-- Camera Controls -->
                         <div class="setting-row" style="border-bottom:none;">
                             <div class="setting-info">
@@ -436,6 +451,7 @@
                             <label class="checkbox-item active"><input type="checkbox" id="detectPerson" checked onchange="SurvSettings.updateDetection()"><span data-i18n="surveillance.detect_person">Person</span></label>
                             <label class="checkbox-item active"><input type="checkbox" id="detectCar" checked onchange="SurvSettings.updateDetection()"><span data-i18n="surveillance.detect_vehicle">Vehicle</span></label>
                             <label class="checkbox-item"><input type="checkbox" id="detectBike" onchange="SurvSettings.updateDetection()"><span data-i18n="surveillance.detect_bike">Bike</span></label>
+                            <label class="checkbox-item"><input type="checkbox" id="detectAnimal" onchange="SurvSettings.updateDetection()"><span data-i18n="surveillance.detect_animal">Animal</span></label>
                         </div>
                         <div class="setting-hint" data-i18n="surveillance.detect_objects_hint">Select which objects YOLO AI should identify. Motion detection triggers regardless — AI classifies what was detected.</div>
 
@@ -878,6 +894,30 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- Clip Duration — shared key (recording.segmentDurationMinutes)
+                             read by both axes; same control as the recording page. -->
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <div class="setting-name">
+                                    <span data-i18n="recording.clip_duration">Clip Duration</span>
+                                    <span class="setting-badge" data-i18n="recording.applies_next_rotation">Next clip</span>
+                                </div>
+                                <div class="setting-desc" data-i18n="recording.clip_duration_desc">Length of each recorded video segment. Applies to both driving (ACC on) and parked surveillance (ACC off) recordings, on the next segment rotation.</div>
+                            </div>
+                            <div class="setting-control">
+                                <div class="btn-group" id="survClipDurationBtns">
+                                    <button class="btn-toggle active" data-value="2" onclick="SurvSettings.setClipDuration(2)" data-i18n="recording.clip_2min">2 min</button>
+                                    <button class="btn-toggle" data-value="5" onclick="SurvSettings.setClipDuration(5)" data-i18n="recording.clip_5min">5 min</button>
+                                    <button class="btn-toggle" data-value="10" onclick="SurvSettings.setClipDuration(10)" data-i18n="recording.clip_10min">10 min</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="info-box-note">
+                            <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <div class="info-note" data-i18n="recording.clip_duration_warning">
+                                Longer clips mean fewer, larger files — but an in-progress clip is only finalized when it rotates. On sudden power loss (e.g. battery cut on impact) the current clip can be lost, so a 10-minute setting risks up to 10 minutes of unsaved footage vs 2. Keep 2 min if your vehicle can lose power abruptly.
+                            </div>
+                        </div>
                         <div class="info-box">
                             <div class="info-row">
                                 <span class="label" data-i18n="recording.active_estimate">At your settings</span>
@@ -1298,7 +1338,7 @@
     <script src="../shared/pwa-init.js?v=index1"></script>
     <script src="../shared/core.js"></script>
     <script src="../shared/update-flow.js"></script>
-    <script src="../shared/surveillance.js?v=storagefilter1"></script>
+    <script src="../shared/surveillance.js?v=discardtoggle1"></script>
     <script src="../shared/safe-locations.js"></script>
     <script src="../shared/roi-schedule.js"></script>
     <script>

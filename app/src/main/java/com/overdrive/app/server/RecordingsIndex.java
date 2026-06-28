@@ -1353,6 +1353,21 @@ public final class RecordingsIndex {
                         JSONObject a = actors.optJSONObject(i);
                         if (a == null) continue;
                         String c = a.optString("class", "").toLowerCase(Locale.US);
+                        // Skip static NON-person actors (parked cars, hydrants):
+                        // they are background, not threats, and shouldn't surface
+                        // a "Vehicle" chip / class filter on the events page.
+                        // Mirrors the engine's rule (keep a static loitering PERSON,
+                        // drop static non-persons) and the JSON count gate in
+                        // EventTimelineCollector. Use the timeline-static SUPERSET
+                        // (isStaticForTimeline) — falling back to isStatic for older
+                        // sidecars — so a parked car detected via the never-moved
+                        // signal (which may not have latched the severity-path
+                        // isStatic under sparse cadence) also drops its chip.
+                        boolean timelineStatic = a.optBoolean("isStaticForTimeline",
+                                a.optBoolean("isStatic", false));
+                        if (timelineStatic && !"person".equals(c)) {
+                            continue;
+                        }
                         if (!c.isEmpty() && seen.add(c)) {
                             if (cls.length() > 0) cls.append(',');
                             cls.append(c);

@@ -7,7 +7,8 @@
     { "name": "Galalike", "github": "Galalike" },
     { "name": "jkaberg", "github": "jkaberg" },
     { "name": "Chiira", "github": "IOKernel" },
-    { "name": "tiagoclc", "github": "tiagoclc" }
+    { "name": "tiagoclc", "github": "tiagoclc" },
+    { "name": "Marlon Chalegre", "github": "marlonchalegre" }
   ],
   "supporters": [
     { "name": "Oizopower" },
@@ -32,6 +33,8 @@
     { "name": "Jan Bleckmann" },
     { "name": "Syed Arslan Haider" },
     { "name": "Simon Ling" },
-    { "name": "Cedric Carre" }
+    { "name": "Cedric Carre" },
+    { "name": "Mauro Manco" },
+    { "name": "aa b" }
   ]
 }

@@ -66,6 +66,20 @@ public final class Actor {
     public final Proximity lastProximity;  // most recent
     public final Trend trend;
     public final boolean isStatic;         // bbox area + position stable for >= STATIC_DWELL_FRAMES
+    // Timeline/marker static verdict — a SUPERSET of isStatic for non-persons.
+    // True when the actor should be treated as background for the SRT timeline,
+    // JSON markers, counts, and the Vehicle chip. Covers the sparse-cadence case
+    // where a genuinely parked car never accrues the consecutive stable frames
+    // for isStatic but demonstrably never moved (everMoved=false). For PERSON
+    // this equals isStatic (a static loitering person is NEVER background). The
+    // severity path keeps using isStatic (unchanged); only the cosmetic
+    // timeline/flag surfaces consult isStaticForTimeline.
+    public final boolean isStaticForTimeline;
+    // True once observed across >= MIN_ESCALATION_FRAMES — i.e. NOT a 1-2 frame
+    // YOLO flicker / one-frame misclassification. Consumers that retain an actor
+    // into a persistent summary (eventPeakActors) gate PERSON retention on this so
+    // a phantom one-frame person can't add a spurious +1 to personCount/caption.
+    public final boolean confirmed;
     public final Severity peakSeverity;
     public final long peakSeverityWallMs;
     public final long peakSeverityRelMs;
@@ -106,7 +120,7 @@ public final class Actor {
                  long firstSeenRelMs, long lastSeenRelMs,
                  int cameraMask,
                  Proximity peakProximity, Proximity lastProximity,
-                 Trend trend, boolean isStatic,
+                 Trend trend, boolean isStatic, boolean isStaticForTimeline, boolean confirmed,
                  Severity peakSeverity, long peakSeverityWallMs, long peakSeverityRelMs,
                  float peakConfidence,
                  int peakBboxX, int peakBboxY, int peakBboxW, int peakBboxH,
@@ -124,6 +138,8 @@ public final class Actor {
         this.lastProximity = lastProximity;
         this.trend = trend;
         this.isStatic = isStatic;
+        this.isStaticForTimeline = isStaticForTimeline;
+        this.confirmed = confirmed;
         this.peakSeverity = peakSeverity;
         this.peakSeverityWallMs = peakSeverityWallMs;
         this.peakSeverityRelMs = peakSeverityRelMs;
