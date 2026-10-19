@@ -29,6 +29,7 @@ const TRIPS = {
     telemetryCache: null,
     radarScoresCache: null,
     rangeCache: null,
+    _tripRecordings: null,
     pendingStorageType: null,
     pendingStorageLimit: null,
     electricityRate: 0,
@@ -3130,6 +3131,11 @@ const TRIPS = {
 
         const deleteBtn = document.getElementById('detailDeleteBtn');
         if (deleteBtn) deleteBtn.disabled = true;
+
+        const recBtn = document.getElementById('detailRecordingsBtn');
+        if (recBtn) recBtn.style.display = 'none';
+        this._tripRecordings = null;
+        this.closeRecordingsModal();
     },
 
     _hasTelemetryArtifact(trip) {
@@ -3357,6 +3363,7 @@ const TRIPS = {
             if (deleteBtn) deleteBtn.disabled = false;
 
             this.loadRouteComparison(trip, detailRequest);
+            this.loadTripRecordings(this.currentTripId, detailRequest);
 
             // Fetch telemetry (may be unavailable for older trips)
             console.log('[Trips] Trip telemetry path:', trip.telemetryFilePath || trip.telemetry_file_path || 'NONE');
@@ -5421,5 +5428,228 @@ const TRIPS = {
         const m = Math.floor((seconds % 3600) / 60);
         if (h > 0) return h + BYD.units.hourSuffix(true) + ' ' + m + BYD.units.minuteSuffix(true, true);
         return m + BYD.units.minuteSuffix(false, false);
+    },
+
+    // ==================== TRIP RECORDINGS ====================
+
+    async loadTripRecordings(tripId, detailRequest) {
+        const btn = document.getElementById('detailRecordingsBtn');
+        const text = document.getElementById('detailRecordingsBtnText');
+        if (btn) btn.style.display = 'none';
+        this._tripRecordings = null;
+
+        if (!tripId) return;
+
+        try {
+            const url = '/api/trips/' + encodeURIComponent(tripId) + '/recordings';
+            const resp = detailRequest && detailRequest.controller
+                ? await fetch(url, { signal: detailRequest.controller.signal })
+                : await fetch(url);
+
+            if (detailRequest && !this._isCurrentDetailRequest(detailRequest)) return;
+            if (!resp.ok) return;
+
+            const data = await resp.json();
+            if (detailRequest && !this._isCurrentDetailRequest(detailRequest)) return;
+
+            if (data && data.success && data.recordings && data.recordings.length > 0) {
+                this._tripRecordings = data;
+                if (text) {
+                    const label = (window.BYD && BYD.i18n && BYD.i18n.t('trip.detail.videos')) || 'Videos';
+                    text.textContent = label + ' (' + data.count + ')';
+                }
+                if (btn) btn.style.display = 'inline-flex';
+            }
+        } catch (e) {
+            if (detailRequest && (!this._isCurrentDetailRequest(detailRequest) || this._isAbortError(e))) return;
+            console.warn('[Trips] Failed to load trip recordings:', e);
+        }
+    },
+
+    openRecordingsModal() {
+        if (!this._tripRecordings || !this._tripRecordings.recordings || !this._tripRecordings.recordings.length) {
+            return;
+        }
+
+        const modal = document.getElementById('tripRecordingsModal');
+        const subtitle = document.getElementById('tripRecordingsSubtitle');
+        const partsContainer = document.getElementById('tripRecordingsParts');
+        const listContainer = document.getElementById('tripRecordingsList');
+        const selectAllCb = document.getElementById('tripRecordingsSelectAll');
+
+        if (!modal || !listContainer) return;
+
+        const count = this._tripRecordings.count || this._tripRecordings.recordings.length;
+        const totalSizeStr = this._tripRecordings.totalSizeFormatted || this.formatBytes(this._tripRecordings.totalSize || 0);
+
+        if (subtitle) {
+            const clipsLabel = (window.BYD && BYD.i18n && BYD.i18n.t('trip.recordings.clips')) || 'clips';
+            subtitle.textContent = count + ' ' + clipsLabel + ' · ' + totalSizeStr;
+        }
+
+        // Render batch presets if > 5 clips
+        if (partsContainer) {
+            partsContainer.innerHTML = '';
+            const recs = this._tripRecordings.recordings;
+            if (recs.length > 5) {
+                const batchSize = 5;
+                const totalParts = Math.ceil(recs.length / batchSize);
+                for (let p = 0; p < totalParts; p++) {
+                    const start = p * batchSize;
+                    const end = Math.min((p + 1) * batchSize, recs.length);
+                    const btn = document.createElement('button');
+                    btn.className = 'recordings-part-btn';
+                    btn.type = 'button';
+                    btn.textContent = 'Part ' + (p + 1) + ' (' + (start + 1) + '–' + end + ')';
+                    btn.onclick = () => {
+                        partsContainer.querySelectorAll('.recordings-part-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        this.selectRecordingsRange(start, end - 1);
+                    };
+                    partsContainer.appendChild(btn);
+                }
+            }
+        }
+
+        // Render clip list
+        listContainer.innerHTML = this._tripRecordings.recordings.map((rec, idx) => {
+            const id = rec.id || rec.recording_id || '';
+            const videoUrl = rec.videoUrl || ('/video/id/' + encodeURIComponent(id));
+            const thumbUrl = rec.thumbnailUrl || ('/thumb/id/' + encodeURIComponent(id));
+            const filename = rec.filename || id;
+            const timeStr = rec.timeFormatted || rec.dateFormatted || '';
+            const sizeStr = rec.sizeFormatted || this.formatBytes(rec.size || 0);
+            const camera = rec.type || '';
+
+            return '<div class="trip-recording-item" data-id="' + id + '">' +
+                '<input type="checkbox" class="trip-recording-checkbox" data-index="' + idx + '" data-id="' + id + '" data-size="' + (rec.size || 0) + '" checked onchange="TRIPS.onRecordingSelectionChange()">' +
+                '<div class="trip-recording-thumb" onclick="window.open(\'' + videoUrl + '\', \'_blank\')">' +
+                    '<img src="' + thumbUrl + '" loading="lazy" onerror="this.style.display=\'none\';">' +
+                    '<span class="trip-recording-play-icon">▶</span>' +
+                '</div>' +
+                '<div class="trip-recording-info">' +
+                    '<div class="trip-recording-filename" title="' + filename + '">' + filename + '</div>' +
+                    '<div class="trip-recording-meta">' +
+                        (timeStr ? '<span>' + timeStr + '</span>' : '') +
+                        (timeStr && sizeStr ? '<span>•</span>' : '') +
+                        (sizeStr ? '<span>' + sizeStr + '</span>' : '') +
+                        (camera ? '<span>•</span><span>' + camera + '</span>' : '') +
+                    '</div>' +
+                '</div>' +
+                '<a class="trip-recording-dl-btn" href="' + videoUrl + '" download="' + filename + '" title="Download">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+                '</a>' +
+            '</div>';
+        }).join('');
+
+        if (selectAllCb) selectAllCb.checked = true;
+        this.onRecordingSelectionChange();
+
+        modal.classList.add('active');
+    },
+
+    closeRecordingsModal() {
+        const modal = document.getElementById('tripRecordingsModal');
+        if (modal) modal.classList.remove('active');
+    },
+
+    toggleAllRecordings(checked) {
+        const parts = document.querySelectorAll('#tripRecordingsParts .recordings-part-btn');
+        parts.forEach(b => b.classList.remove('active'));
+        const cbs = document.querySelectorAll('#tripRecordingsList .trip-recording-checkbox');
+        cbs.forEach(cb => { cb.checked = !!checked; });
+        this.onRecordingSelectionChange();
+    },
+
+    selectRecordingsRange(startIdx, endIdx) {
+        const cbs = document.querySelectorAll('#tripRecordingsList .trip-recording-checkbox');
+        cbs.forEach((cb, i) => {
+            cb.checked = (i >= startIdx && i <= endIdx);
+        });
+        this.onRecordingSelectionChange();
+    },
+
+    onRecordingSelectionChange() {
+        const cbs = Array.from(document.querySelectorAll('#tripRecordingsList .trip-recording-checkbox'));
+        let selectedCount = 0;
+        let selectedBytes = 0;
+
+        for (let i = 0; i < cbs.length; i++) {
+            if (cbs[i].checked) {
+                selectedCount++;
+                selectedBytes += Number(cbs[i].dataset.size || 0);
+            }
+        }
+
+        const selectAllCb = document.getElementById('tripRecordingsSelectAll');
+        if (selectAllCb) {
+            selectAllCb.checked = (cbs.length > 0 && selectedCount === cbs.length);
+            selectAllCb.indeterminate = (selectedCount > 0 && selectedCount < cbs.length);
+        }
+
+        // Size warning for downloads >= 500 MB (524,288,000 bytes)
+        const warningEl = document.getElementById('tripRecordingsWarning');
+        const warningText = document.getElementById('tripRecordingsWarningText');
+        const isLarge = selectedBytes >= 524288000;
+        if (warningEl) {
+            if (isLarge) {
+                const warnMsg = (window.BYD && BYD.i18n && BYD.i18n.t('trip.recordings.large_warning', { size: this.formatBytes(selectedBytes) }))
+                    || ('Large download (' + this.formatBytes(selectedBytes) + '). May be slow or interrupted on vehicle connection. Downloading individual clips or parts is recommended.');
+                if (warningText) warningText.textContent = warnMsg;
+                warningEl.style.display = 'flex';
+            } else {
+                warningEl.style.display = 'none';
+            }
+        }
+
+        const dlBtn = document.getElementById('tripRecordingsDownloadBtn');
+        const dlBtnText = document.getElementById('tripRecordingsDownloadBtnText');
+        if (dlBtn && dlBtnText) {
+            if (selectedCount === 0) {
+                dlBtn.disabled = true;
+                dlBtnText.textContent = (window.BYD && BYD.i18n && BYD.i18n.t('trip.recordings.none_selected')) || 'No clips selected';
+            } else {
+                dlBtn.disabled = false;
+                const sizeStr = this.formatBytes(selectedBytes);
+                if (selectedCount === cbs.length) {
+                    const label = (window.BYD && BYD.i18n && BYD.i18n.t('trip.recordings.download_all_zip')) || 'Download All (ZIP)';
+                    dlBtnText.textContent = label + ' (' + sizeStr + ')';
+                } else {
+                    const label = (window.BYD && BYD.i18n && BYD.i18n.t('trip.recordings.download_selected')) || 'Download Selected';
+                    dlBtnText.textContent = label + ' (' + selectedCount + ' · ' + sizeStr + ')';
+                }
+            }
+        }
+    },
+
+    downloadSelectedRecordingsZip() {
+        if (!this._tripRecordings || !this.currentTripId) return;
+
+        const cbs = Array.from(document.querySelectorAll('#tripRecordingsList .trip-recording-checkbox'));
+        const selectedIds = [];
+        let selectedBytes = 0;
+
+        for (let i = 0; i < cbs.length; i++) {
+            if (cbs[i].checked) {
+                selectedIds.push(cbs[i].dataset.id);
+                selectedBytes += Number(cbs[i].dataset.size || 0);
+            }
+        }
+
+        if (selectedIds.length === 0) return;
+
+        if (selectedBytes >= 524288000) {
+            const sizeStr = this.formatBytes(selectedBytes);
+            const prompt = (window.BYD && BYD.i18n && BYD.i18n.t('trip.recordings.confirm_large_download', { size: sizeStr }))
+                || ('This download is ' + sizeStr + '. Downloading large files over vehicle Wi-Fi may be slow or interrupted.\n\nDo you want to continue?');
+            if (!window.confirm(prompt)) return;
+        }
+
+        let url = '/api/trips/' + encodeURIComponent(this.currentTripId) + '/recordings/download';
+        if (selectedIds.length < cbs.length) {
+            url += '?ids=' + encodeURIComponent(selectedIds.join(','));
+        }
+
+        window.location.href = url;
     }
 };

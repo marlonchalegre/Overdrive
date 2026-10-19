@@ -757,6 +757,7 @@
     },
     "detail": {
       "back": "Voltar para Viagens",
+      "videos": "Vídeos",
       "duration": "Duração",
       "soc_used": "SoC Utilizado",
       "energy": "Energia",
@@ -774,6 +775,18 @@
       "elev_up": "Elev ↑",
       "elev_down": "Elev ↓",
       "delete_trip": "Excluir Viagem"
+    },
+    "recordings": {
+      "title": "Gravações da Viagem",
+      "subtitle": "{count} vídeos · {size}",
+      "clips": "vídeos",
+      "select_all": "Selecionar Tudo",
+      "download_all_zip": "Baixar Tudo (ZIP)",
+      "download_selected": "Baixar Selecionados",
+      "none_selected": "Nenhum vídeo selecionado",
+      "part_button": "Parte {part} ({start}–{end})",
+      "large_warning": "Download grande ({size}). Pode ser lento ou interrompido pela conexão do veículo. Recomenda-se baixar vídeos individuais ou em partes.",
+      "confirm_large_download": "Este download tem {size}. Baixar arquivos grandes pelo Wi-Fi do veículo pode ser lento ou instável.\n\nDeseja continuar?"
     },
     "timeline": {
       "title": "Linha do tempo da viagem",

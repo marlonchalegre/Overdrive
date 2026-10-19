@@ -919,6 +919,258 @@
         }
         .detail-back-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
         .detail-back-btn svg { width: 16px; height: 16px; }
+        .detail-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .detail-action-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            color: var(--brand-primary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .detail-action-btn:hover { background: var(--bg-elevated); border-color: var(--brand-primary); }
+        .detail-action-btn svg { width: 16px; height: 16px; }
+
+        /* ===== TRIP RECORDINGS MODAL ===== */
+        .recordings-modal {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--panel-overlay-bg-deep);
+            z-index: 1000;
+            display: none;
+            align-items: flex-end;
+            justify-content: center;
+            padding: 0;
+            backdrop-filter: blur(4px);
+        }
+        .recordings-modal.active { display: flex; }
+        @media (min-width: 520px) {
+            .recordings-modal { align-items: center; padding: 20px; }
+            .recordings-modal-panel { border-radius: var(--radius-lg); max-width: 520px; }
+        }
+        .recordings-modal-panel {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+            padding: 20px;
+            width: 100%;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            box-shadow: var(--shadow-lg);
+        }
+        .recordings-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .recordings-modal-title { font-size: 18px; font-weight: 600; color: var(--text-primary); }
+        .recordings-modal-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+        .recordings-modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--radius-sm);
+            transition: color 0.15s;
+        }
+        .recordings-modal-close:hover { color: var(--text-primary); }
+
+        .recordings-size-warning {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(245, 158, 11, 0.12);
+            border: 1px solid rgba(245, 158, 11, 0.35);
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            font-size: 12px;
+            color: #F59E0B;
+            line-height: 1.4;
+        }
+
+        .recordings-selection-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 12px;
+            padding: 4px 0;
+            flex-wrap: wrap;
+        }
+        .recordings-select-all-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            color: var(--text-primary);
+            font-weight: 500;
+            user-select: none;
+        }
+        .recordings-batch-presets {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .recordings-part-btn,
+        .recordings-batch-btn {
+            font-size: 12px;
+            font-weight: 500;
+            padding: 4px 10px;
+            background: var(--bg-elevated, #242731);
+            border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.2));
+            border-radius: var(--radius-sm, 6px);
+            color: var(--text-primary, #ffffff);
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .recordings-part-btn:hover,
+        .recordings-batch-btn:hover {
+            color: var(--brand-primary, #00D4AA);
+            border-color: var(--brand-primary, #00D4AA);
+            background: var(--bg-surface, #2d313d);
+        }
+        .recordings-part-btn.active,
+        .recordings-batch-btn.active {
+            color: var(--brand-primary, #00D4AA);
+            border-color: var(--brand-primary, #00D4AA);
+            background: rgba(0, 212, 170, 0.15);
+        }
+
+        .recordings-list {
+            overflow-y: auto;
+            max-height: 45vh;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-right: 2px;
+        }
+        .trip-recording-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            transition: border-color 0.15s;
+        }
+        .trip-recording-item:hover {
+            border-color: var(--border-hover, var(--border-subtle));
+        }
+        .trip-recording-checkbox {
+            cursor: pointer;
+            accent-color: var(--brand-primary);
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+        .trip-recording-thumb {
+            width: 56px;
+            height: 36px;
+            background: var(--bg-surface);
+            border-radius: var(--radius-sm);
+            position: relative;
+            overflow: hidden;
+            flex-shrink: 0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .trip-recording-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .trip-recording-play-icon {
+            position: absolute;
+            font-size: 12px;
+            color: #fff;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+            pointer-events: none;
+        }
+        .trip-recording-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .trip-recording-filename {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .trip-recording-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .trip-recording-dl-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-primary);
+            flex-shrink: 0;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .trip-recording-dl-btn:hover {
+            color: var(--brand-primary);
+            border-color: var(--brand-primary);
+            background: var(--bg-hover, var(--bg-elevated));
+        }
+        .recordings-modal-footer {
+            margin-top: 4px;
+        }
+        .recordings-download-all-btn {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 16px;
+            background: var(--brand-primary);
+            color: var(--bg-base);
+            border: none;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .recordings-download-all-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .recordings-download-all-btn:not(:disabled):hover {
+            opacity: 0.9;
+        }
 
         .detail-summary {
             background: var(--bg-surface);
@@ -1866,6 +2118,12 @@
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
                             <span data-i18n="trip.detail.back">Back to Trips</span>
                         </button>
+                        <div class="detail-actions">
+                            <button class="detail-action-btn" id="detailRecordingsBtn" onclick="TRIPS.openRecordingsModal()" style="display:none;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                                <span id="detailRecordingsBtnText" data-i18n="trip.detail.videos">Videos</span>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Summary Header -->
@@ -2092,8 +2350,46 @@
         </main>
     </div>
 
-    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
-    <div id="toastContainer" class="toast-container"></div>
+    <!-- Trip Recordings Modal -->
+    <div class="recordings-modal" id="tripRecordingsModal" onclick="if(event.target === this) TRIPS.closeRecordingsModal()">
+        <div class="recordings-modal-panel">
+            <div class="recordings-modal-header">
+                <div>
+                    <div class="recordings-modal-title" data-i18n="trip.recordings.title">Trip Recordings</div>
+                    <div class="recordings-modal-subtitle" id="tripRecordingsSubtitle">--</div>
+                </div>
+                <button class="recordings-modal-close" onclick="TRIPS.closeRecordingsModal()" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+
+            <div class="recordings-size-warning" id="tripRecordingsWarning" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;flex-shrink:0;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span id="tripRecordingsWarningText">Large download. May be slow or interrupted on vehicle connection. Downloading individual clips is recommended.</span>
+            </div>
+
+            <div class="recordings-selection-bar">
+                <label class="recordings-select-all-label">
+                    <input type="checkbox" id="tripRecordingsSelectAll" onchange="TRIPS.toggleAllRecordings(this.checked)" checked>
+                    <span data-i18n="trip.recordings.select_all">Select All</span>
+                </label>
+                <div class="recordings-batch-presets" id="tripRecordingsParts">
+                    <!-- Dynamic Part 1, Part 2 buttons appear if > 5 clips -->
+                </div>
+            </div>
+
+            <div class="recordings-list" id="tripRecordingsList">
+                <!-- Clips populated dynamically -->
+            </div>
+
+            <div class="recordings-modal-footer">
+                <button class="recordings-download-all-btn" id="tripRecordingsDownloadBtn" onclick="TRIPS.downloadSelectedRecordingsZip()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <span id="tripRecordingsDownloadBtnText">Download Selected</span>
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Calendar Popup -->
     <div class="calendar-popup" id="calendarPopup">

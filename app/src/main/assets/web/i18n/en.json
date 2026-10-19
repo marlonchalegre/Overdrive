@@ -1091,6 +1091,7 @@
     },
     "detail": {
       "back": "Back to Trips",
+      "videos": "Videos",
       "duration": "Duration",
       "soc_used": "SoC Used",
       "energy": "Energy",
@@ -1108,6 +1109,18 @@
       "elev_up": "Elev ↑",
       "elev_down": "Elev ↓",
       "delete_trip": "Delete Trip"
+    },
+    "recordings": {
+      "title": "Trip Recordings",
+      "subtitle": "{count} clips · {size}",
+      "clips": "clips",
+      "select_all": "Select All",
+      "download_all_zip": "Download All (ZIP)",
+      "download_selected": "Download Selected",
+      "none_selected": "No clips selected",
+      "part_button": "Part {part} ({start}–{end})",
+      "large_warning": "Large download ({size}). May be slow or interrupted on vehicle connection. Downloading individual clips or parts is recommended.",
+      "confirm_large_download": "This download is {size}. Downloading large files over vehicle Wi-Fi may be slow or interrupted.\n\nDo you want to continue?"
     },
     "timeline": {
       "title": "Trip Timeline",

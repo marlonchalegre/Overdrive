@@ -5,15 +5,26 @@ import com.overdrive.app.monitor.GpsMonitor;
 import com.overdrive.app.monitor.VehicleDataMonitor;
 import com.overdrive.app.storage.StorageManager;
 
+import com.overdrive.app.server.HttpResponse;
+import com.overdrive.app.server.RecordingsIndex;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.OutputStream;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.Deflater;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Standalone handler for /api/trips/* HTTP requests.
@@ -42,11 +53,31 @@ public class TripApiHandler {
     private static final Pattern TRIP_SIMILAR_PATTERN = Pattern.compile("^/api/trips/(\\d+)/similar$");
     private static final Pattern TRIP_GPS_PATTERN = Pattern.compile("^/api/trips/(\\d+)/gps$");
     private static final Pattern TRIP_RESCORE_PATTERN = Pattern.compile("^/api/trips/(\\d+)/rescore$");
+    private static final Pattern TRIP_RECORDINGS_PATTERN = Pattern.compile("^/api/trips/(\\d+)/recordings$");
+    private static final Pattern TRIP_RECORDINGS_DOWNLOAD_PATTERN = Pattern.compile("^/api/trips/(\\d+)/recordings/download$");
 
     private final TripAnalyticsManager manager;
 
     public TripApiHandler(TripAnalyticsManager manager) {
         this.manager = manager;
+    }
+
+    /**
+     * Handle streaming endpoints (e.g. ZIP download).
+     * @return true if handled directly on OutputStream, false if caller should continue routing.
+     */
+    public boolean handleStream(String uri, String method, OutputStream out) throws Exception {
+        String path = uri.contains("?") ? uri.substring(0, uri.indexOf("?")) : uri;
+        Matcher downloadMatcher = TRIP_RECORDINGS_DOWNLOAD_PATTERN.matcher(path);
+        if (downloadMatcher.matches() && "GET".equals(method)) {
+            long tripId = Long.parseLong(downloadMatcher.group(1));
+            Map<String, String> params = new HashMap<>();
+            if (uri.contains("?")) {
+                parseQueryParams(uri.substring(uri.indexOf("?") + 1), params);
+            }
+            return handleDownloadTripRecordings(tripId, params, out);
+        }
+        return false;
     }
 
     /**
@@ -138,6 +169,13 @@ public class TripApiHandler {
             if (rescoreMatcher.matches() && "POST".equals(method)) {
                 long tripId = Long.parseLong(rescoreMatcher.group(1));
                 return handleRescoreTrip(tripId);
+            }
+
+            // Route: GET /api/trips/{id}/recordings
+            Matcher recordingsMatcher = TRIP_RECORDINGS_PATTERN.matcher(path);
+            if (recordingsMatcher.matches() && "GET".equals(method)) {
+                long tripId = Long.parseLong(recordingsMatcher.group(1));
+                return handleGetTripRecordings(tripId);
             }
 
             // Route: GET /api/trips/{id}/gps
@@ -543,6 +581,131 @@ public class TripApiHandler {
             logger.error("Error building trip detail response", e);
         }
         return response;
+    }
+
+    /**
+     * GET /api/trips/{id}/recordings — list matching video recordings for a trip.
+     */
+    private JSONObject handleGetTripRecordings(long tripId) {
+        TripDatabase db = manager.getDatabase();
+        if (db == null) {
+            return errorResponse("Trip database not available", 500);
+        }
+
+        TripRecord trip = db.getTrip(tripId);
+        if (trip == null) {
+            return errorResponse("Trip not found", 404);
+        }
+
+        RecordingsIndex idx = RecordingsIndex.getInstance();
+        if (idx == null || idx.isUnavailableForClients()) {
+            return errorResponse("Recordings index not available", 503);
+        }
+
+        long effectiveEnd = trip.endTime > trip.startTime ? trip.endTime :
+                (trip.durationSeconds > 0 ? trip.startTime + trip.durationSeconds * 1000L : trip.startTime + 60_000L);
+
+        List<JSONObject> list = idx.queryRecordingsForTrip(trip.startTime, effectiveEnd);
+        JSONArray recordingsArray = new JSONArray();
+        long totalSize = 0;
+        for (JSONObject r : list) {
+            recordingsArray.put(r);
+            totalSize += r.optLong("size", 0);
+        }
+
+        JSONObject response = new JSONObject();
+        try {
+            response.put("success", true);
+            response.put("tripId", tripId);
+            response.put("count", list.size());
+            response.put("totalSize", totalSize);
+            response.put("totalSizeFormatted", RecordingsIndex.formatSize(totalSize));
+            response.put("recordings", recordingsArray);
+        } catch (Exception e) {
+            logger.error("Error building trip recordings response", e);
+        }
+        return response;
+    }
+
+    /**
+     * GET /api/trips/{id}/recordings/download — stream a zero-compression ZIP archive of video files.
+     */
+    private boolean handleDownloadTripRecordings(long tripId, Map<String, String> params, OutputStream out) throws Exception {
+        TripDatabase db = manager.getDatabase();
+        if (db == null) {
+            HttpResponse.sendError(out, 500, "Trip database not available");
+            return true;
+        }
+
+        TripRecord trip = db.getTrip(tripId);
+        if (trip == null) {
+            HttpResponse.sendError(out, 404, "Trip not found");
+            return true;
+        }
+
+        RecordingsIndex idx = RecordingsIndex.getInstance();
+        if (idx == null || idx.isUnavailableForClients()) {
+            HttpResponse.sendError(out, 503, "Recordings index not available");
+            return true;
+        }
+
+        long effectiveEnd = trip.endTime > trip.startTime ? trip.endTime :
+                (trip.durationSeconds > 0 ? trip.startTime + trip.durationSeconds * 1000L : trip.startTime + 60_000L);
+
+        Set<String> specificIds = null;
+        String idsParam = params != null ? params.get("ids") : null;
+        if (idsParam != null && !idsParam.trim().isEmpty()) {
+            specificIds = new HashSet<>(Arrays.asList(idsParam.split(",")));
+        }
+
+        List<JSONObject> list = idx.queryRecordingsForTrip(trip.startTime, effectiveEnd, specificIds);
+        if (list.isEmpty()) {
+            HttpResponse.sendError(out, 404, "No recordings found for this trip");
+            return true;
+        }
+
+        String zipName = "Trip-" + tripId + "-Videos.zip";
+        HttpResponse.sendAttachmentNoStoreHeaders(out, "application/zip", zipName);
+
+        ZipOutputStream zip = new ZipOutputStream(out);
+        zip.setLevel(Deflater.NO_COMPRESSION);
+        byte[] buffer = new byte[65536];
+        Set<String> entryNames = new HashSet<>();
+
+        try {
+            for (JSONObject rec : list) {
+                String filePath = rec.optString("path");
+                if (filePath == null || filePath.isEmpty()) continue;
+                File file = new File(filePath);
+                if (!file.isFile() || !file.canRead()) continue;
+
+                String entryName = file.getName();
+                if (entryNames.contains(entryName)) {
+                    String id = rec.optString("id", rec.optString("recording_id", ""));
+                    entryName = (id.isEmpty() ? String.valueOf(System.currentTimeMillis()) : id) + "_" + entryName;
+                }
+                entryNames.add(entryName);
+
+                ZipEntry entry = new ZipEntry(entryName);
+                entry.setTime(file.lastModified());
+                zip.putNextEntry(entry);
+
+                try (FileInputStream fis = new FileInputStream(file)) {
+                    int read;
+                    while ((read = fis.read(buffer)) != -1) {
+                        zip.write(buffer, 0, read);
+                    }
+                }
+                zip.closeEntry();
+            }
+            zip.finish();
+            zip.flush();
+        } catch (Exception e) {
+            logger.warn("Error streaming trip recordings ZIP: " + e.getMessage());
+            throw e;
+        }
+
+        return true;
     }
 
     /**

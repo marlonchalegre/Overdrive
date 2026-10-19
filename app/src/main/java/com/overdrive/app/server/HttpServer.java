@@ -1129,6 +1129,9 @@ public class HttpServer {
             com.overdrive.app.trips.TripAnalyticsManager tam = CameraDaemon.getTripAnalyticsManager();
             if (tam != null) {
                 com.overdrive.app.trips.TripApiHandler handler = new com.overdrive.app.trips.TripApiHandler(tam);
+                if (handler.handleStream(path, method, out)) {
+                    return true;
+                }
                 org.json.JSONObject result = handler.handleRequest(path, method, null, body);
                 if (result != null) {
                     int status = result.optInt("_status", 200);

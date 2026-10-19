@@ -505,6 +505,7 @@
     },
     "detail": {
       "back": "Voltar aos percursos",
+      "videos": "Vídeos",
       "duration": "Duração",
       "soc_used": "SoC usado",
       "energy": "Energia",
@@ -519,6 +520,18 @@
       "elev_up": "Elev ↑",
       "elev_down": "Elev ↓",
       "delete_trip": "Excluir viagem"
+    },
+    "recordings": {
+      "title": "Gravações da Viagem",
+      "subtitle": "{count} vídeos · {size}",
+      "clips": "vídeos",
+      "select_all": "Selecionar Tudo",
+      "download_all_zip": "Transferir Tudo (ZIP)",
+      "download_selected": "Transferir Selecionados",
+      "none_selected": "Nenhum vídeo selecionado",
+      "part_button": "Parte {part} ({start}–{end})",
+      "large_warning": "Transferência grande ({size}). Pode ser lenta ou interrompida pela ligação do veículo. Recomenda-se descarregar vídeos individuais ou em partes.",
+      "confirm_large_download": "Esta transferência tem {size}. Descarregar ficheiros grandes por Wi-Fi do veículo pode ser lento ou instável.\n\nDeseja continuar?"
     },
     "timeline": {
       "title": "Cronograma de Viagem",

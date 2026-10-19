@@ -1798,6 +1798,49 @@ public final class RecordingsIndex {
         });
     }
 
+    /**
+     * Query recordings associated with a trip by its start/end timestamp.
+     * Includes clips overlapping [startTime, endTime].
+     * If specificIds is provided and non-empty, narrows to those recording IDs.
+     */
+    public synchronized List<JSONObject> queryRecordingsForTrip(long startTime, long endTime, Set<String> specificIds) {
+        long effectiveEnd = Math.max(startTime, endTime);
+        long lookback = startTime - 10 * 60 * 1000L; // 10 minutes buffer for clips started before trip
+        StringBuilder sql = new StringBuilder("SELECT * FROM recordings"
+                + " WHERE is_available = TRUE"
+                + " AND ts_ms <= ?"
+                + " AND (ts_ms >= ? OR mp4_mtime >= ? OR (mp4_mtime = 0 AND ts_ms >= ?))"
+                + " AND ts_ms >= ?");
+        List<Object> args = new ArrayList<>();
+        args.add(effectiveEnd);
+        args.add(startTime);
+        args.add(startTime);
+        args.add(startTime - 120_000L);
+        args.add(lookback);
+
+        if (specificIds != null && !specificIds.isEmpty()) {
+            sql.append(" AND recording_id IN ").append(inList(specificIds.size()));
+            args.addAll(specificIds);
+        }
+        sql.append(" ORDER BY ts_ms ASC");
+
+        return withRetry("queryRecordingsForTrip", new ArrayList<JSONObject>(), () -> {
+            List<JSONObject> out = new ArrayList<>();
+            try (PreparedStatement ps = connection.prepareStatement(sql.toString())) {
+                int p = 1;
+                for (Object a : args) bind(ps, p++, a);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) out.add(rowToJson(rs));
+                }
+            }
+            return out;
+        });
+    }
+
+    public synchronized List<JSONObject> queryRecordingsForTrip(long startTime, long endTime) {
+        return queryRecordingsForTrip(startTime, endTime, null);
+    }
+
     public synchronized int queryCount(Filter f) {
         StringBuilder where = new StringBuilder();
         List<Object> args = new ArrayList<>();
@@ -2560,7 +2603,7 @@ public final class RecordingsIndex {
         return c.getTimeInMillis();
     }
 
-    private static String formatSize(long bytes) {
+    public static String formatSize(long bytes) {
         if (bytes >= 1_000_000_000L) return String.format(Locale.US, "%.1f GB", bytes / 1_000_000_000.0);
         if (bytes >= 1_000_000L) return String.format(Locale.US, "%.1f MB", bytes / 1_000_000.0);
         if (bytes >= 1_000L) return String.format(Locale.US, "%.1f KB", bytes / 1_000.0);
